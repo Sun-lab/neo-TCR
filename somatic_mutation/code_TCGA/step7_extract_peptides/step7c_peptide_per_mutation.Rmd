@@ -1,0 +1,570 @@
+---
+title: "Extract somatically mutated peptides"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(ggrepel)
+library(biomaRt)
+library(Biostrings)
+library(GenomicRanges)
+library(dplyr)
+
+theme_set(theme_classic())
+
+data_dir   = "~/research/data/TCR/TCGA"
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+output_len = 17
+if(output_len %%2 == 0){
+  stop("peptide length should be an odd number\n")
+}
+```
+
+# Read in data
+
+
+## Read in all the somatic mutation data
+
+```{r}
+mutation_file = "mc3.v0.2.8.CONTROLLED.maf.gz"
+
+mut_dat0 = fread(file.path(data_dir, mutation_file), 
+                select = c("Hugo_Symbol", "NCBI_Build", "Chromosome", "Strand", 
+                           "Start_Position", "End_Position", "Reference_Allele", 
+                           "Tumor_Seq_Allele1", "Tumor_Seq_Allele2", 
+                           "Variant_Classification", "Variant_Type", 
+                           "Feature", "Feature_type", "Consequence", 
+                           "HGVSc", "HGVSp_Short", "Transcript_ID"))
+dim(mut_dat0)
+mut_dat0[1:2,]
+
+table(mut_dat0$Strand)
+table(mut_dat0$Variant_Type)
+```
+
+## Load somatic mutations and peptide data
+
+Check the format of each type of mutations.Remove three small groups "Nonstop_Mutation", "Splice_Site", and "Translation_Start_Site". Remove entries with "X" in amino acid sequence.
+
+```{r}
+mut_data = fread(file.path(result_dir, "step7_mutations.tsv"))
+peptides = fread(file.path(result_dir, "step7_peptide_seq.tsv"))
+
+dim(mut_data)
+dim(peptides)
+
+mut_data[1:2,]
+peptides[1:2,1:3]
+substr(peptides$peptide[1:2], 1, 10)
+substr(peptides$coding[1:2], 1, 30)
+translate(DNAStringSet(substr(peptides$coding[1:2], 1, 30)))
+
+wX = grep("X", peptides$peptide)
+wX
+peptides$peptide[wX]
+peptides = peptides[-wX,]
+
+table(mut_data$Variant_Classification, mut_data$Variant_Type)
+
+class2rm = c("Nonstop_Mutation", "Splice_Site", "Translation_Start_Site")
+mut_data = mut_data[-which(mut_data$Variant_Classification %in% class2rm),]
+dim(mut_data)
+```
+
+## Check the consistency between peptide and coding sequence. 
+
+Remove a few entries where peptides and coding sequences are inconsistent.
+
+```{r warning = FALSE}
+pep_len = nchar(peptides$peptide)
+coding_len = nchar(peptides$coding)
+
+table(coding_len - pep_len*3)
+
+w2check = NULL
+
+for(i in 1:nrow(peptides)){
+  pep_i <- tryCatch({
+      translate(DNAString(peptides$coding[i]))
+  }, warning = function(w) {
+      cat("i:", i, "Warning:", w$message, ". ")
+      cat(sprintf("lenght of peptide/coding = %d/%d.\n", 
+                  nchar(peptides$peptide[i]), 
+                  nchar(peptides$coding[i])))
+      translate(DNAString(peptides$coding[i]))
+  }, error = function(e) {
+      cat("i:", i, "Error occurred:", e$message, "\n")
+      NA
+  })
+  
+  if(is.na(pep_i[1])){ next }
+  
+  if(! as.character(pep_i) == peptides$peptide[i]){
+    w2check = c(w2check, i)
+  }
+}
+
+w2check
+translate(DNAString(peptides$coding[w2check[2]]))
+AAString(peptides$peptide[w2check[2]])
+
+peptides = peptides[-w2check,]
+dim(peptides)
+```
+
+## Check the size of reference and alternative alleles.
+
+Filter out mutations without peptide data or has very long reference allele
+
+```{r}
+table(mut_data$Transcript_ID %in% peptides$transcript)
+mut_data = mut_data[mut_data$Transcript_ID %in% peptides$transcript,]
+
+dim(mut_data)
+mut_data[1:2,]
+
+nchar_A1 = nchar(mut_data$Tumor_Seq_Allele1)
+nchar_A2 = nchar(mut_data$Tumor_Seq_Allele2)
+
+table(nchar_A1)
+table(nchar_A2)
+
+table(mut_data$HGVSp_Short == ".", mut_data$HGVSc == ".")
+table(mut_data$HGVSp_Short == ".", nchar_A1 > 10000)
+
+mut_data = mut_data[which(nchar_A1 <= 10000),]
+dim(mut_data)
+mut_data[1:2,]
+
+table(mut_data$Variant_Classification, mut_data$Variant_Type)
+nchar_A1 = nchar(mut_data$Tumor_Seq_Allele1)
+tapply(nchar_A1, mut_data$Variant_Classification, table)
+```
+
+## Double check Frame_Shift_Del
+
+Remove a few entries whose HGVSp_Short pattern do not match with the general pattern. 
+
+```{r}
+ww1 = which(mut_data$Variant_Classification == "Frame_Shift_Del")
+table(mut_data$Tumor_Seq_Allele1[ww1])
+table(mut_data$Tumor_Seq_Allele2[ww1])
+
+DNA_ref = str_extract(mut_data$HGVSc[i], "(?<=c\\.[\\d|_]{1,20}del)[A|C|G|T]+")
+AA_pos  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z])\\d+")
+AA_ref  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.)[A-Z]")
+AA_mut  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z]\\d{1,10})([A-Z]|\\*)")
+
+detected = str_detect(mut_data$HGVSc[ww1], "c\\.[\\d|_]{1,20}del[A|C|G|T]+")
+table(detected)
+
+detected = str_detect(mut_data$HGVSp_Short[ww1], "p\\.[A-Z]\\d{1,10}([A-Z]|\\*)")
+table(detected)
+
+mut_data[ww1[!detected],]
+mut_data = mut_data[-ww1[!detected],]
+```
+
+
+## Double check Frame_Shift_Ins
+
+Remove a few entries whose HGVSp_Short pattern do not match with the general pattern. 
+
+```{r}
+ww1 = which(mut_data$Variant_Classification == "Frame_Shift_Ins")
+table(mut_data$Tumor_Seq_Allele1[ww1])
+table(mut_data$Tumor_Seq_Allele2[ww1])
+
+detected = str_detect(mut_data$HGVSc[ww1], "c\\.[\\d]{1,10}dup[A-Z]")
+table(detected)
+
+mut_data[ww1[!detected],]
+mut_data = mut_data[-ww1[!detected],]
+```
+
+## Double check In_Frame_Del
+```{r}
+ww1 = which(mut_data$Variant_Classification == "In_Frame_Del")
+table(nchar(mut_data$Tumor_Seq_Allele1[ww1]))
+table(mut_data$Tumor_Seq_Allele2[ww1])
+
+detected = str_detect(mut_data$HGVSc[ww1], "c\\.[\\d|_]+del[A-Z]+")
+table(detected)
+
+detected = str_detect(mut_data$HGVSp_Short[ww1], "p\\.[A-Z|\\d|_]+del")
+table(detected)
+mut_data$HGVSp_Short[ww1]
+```
+
+## Extract peptides around each somatic mutation
+
+Check mutation annotation match with the coding or peptide sequences.
+
+* Missense_Mutation: mutated amino acid is at the center of the peptide. 
+
+* Nonsense_Mutation: since mutation created a stop codon, we cannot "see" the mutated amino acid. In the wild type peptide, the mutation is at the center, while the mutated peptide is the wild type peptide that ends right before the mutated amino acid. 
+
+* Indels: we need to obtain the DNA sequence, add mutation to the DNA sequence, and then translate it to protein sequence. 
+
+```{r warning = FALSE}
+summary(nchar(peptides$peptide))
+table(nchar(peptides$peptide) >= output_len)
+
+w2rm = which(nchar(peptides$peptide) < output_len)
+peptides[w2rm,1:3]
+gene2rm = unique(peptides$gene[w2rm])
+
+if(length(gene2rm) > 0){
+  mut_data = mut_data[which(! mut_data$Hugo_Symbol %in% gene2rm),]
+}
+
+pep_df = data.frame(wildtype = rep(NA, nrow(mut_data)), 
+                    mutant = rep(NA, nrow(mut_data)), 
+                    mut_pos = rep(NA, nrow(mut_data)))
+
+tapply(1:nrow(mut_data), mut_data$Variant_Classification, function(v){v[1:10]})
+
+for(i in 1:nrow(mut_data)){
+  w_transcript = which(peptides$transcript == mut_data$Transcript_ID[i])
+  stopifnot(length(w_transcript) == 1)
+  AAseq  = peptides$peptide[w_transcript]
+  DNAseq = peptides$coding[w_transcript]
+  AAseq_len = nchar(AAseq)
+
+  ## ------------------------------------------------------------
+  ## Missense_Mutation: format like c.608C>T or p.A203V
+  ## ------------------------------------------------------------
+
+  if(mut_data$Variant_Classification[i] == "Missense_Mutation"){
+    DNA_pos = str_extract(mut_data$HGVSc[i], "(?<=c\\.)\\d+")
+    DNA_ref = str_extract(mut_data$HGVSc[i], "(?<=c\\.\\d{1,10})[A|C|G|T]")
+    AA_pos  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z])\\d+")
+    AA_ref  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.)[A-Z]")
+    AA_mut  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z]\\d{1,10})[A-Z]")
+
+    AA_pos  = as.numeric(AA_pos)
+    DNA_pos = as.numeric(DNA_pos)
+    
+    if(is.na(AA_pos) || is.na(DNA_pos)){
+      stop("NAs in positions.")
+    }
+
+    stopifnot(DNA_ref == substr(DNAseq, DNA_pos, DNA_pos))
+    stopifnot(AA_ref  == substr(AAseq, AA_pos, AA_pos))
+    
+    ## since AAseq_len >= output_len, the following two conditions can not 
+    ## be true the same time
+    
+    if(AA_pos - (output_len - 1)/2 < 1){
+      AA_start = 1; AA_end = output_len
+    } else if(AA_pos + (output_len - 1)/2 > AAseq_len){
+      AA_start = AAseq_len - output_len + 1; 
+      AA_end = AAseq_len
+    } else {
+      AA_start = AA_pos - (output_len - 1)/2; 
+      AA_end = AA_pos + (output_len - 1)/2
+    }
+
+    mut_pos = AA_pos - AA_start + 1
+    pep_df$mut_pos[i] = mut_pos
+    
+    if(AA_end - AA_start +1 != output_len){
+      stop(sprintf("cannot find a %d-aa long peptide.", output_len))
+    }
+    
+    pep_df$wildtype[i] = substr(AAseq, AA_start, AA_end)
+    pep_df$mutant[i]   = pep_df$wildtype[i]
+    str_sub(pep_df$mutant[i], start = mut_pos, end = mut_pos) = AA_mut
+  }
+  
+  ## ------------------------------------------------------------
+  ## Nonsense_Mutation, format like c.817G>T or p.E273*
+  ## ------------------------------------------------------------
+
+  if(mut_data$Variant_Classification[i] == "Nonsense_Mutation"){
+    DNA_pos = str_extract(mut_data$HGVSc[i], "(?<=c\\.)\\d+")
+    DNA_ref = str_extract(mut_data$HGVSc[i], "(?<=c\\.\\d{1,10})[A|C|G|T]")
+    AA_pos  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z])\\d+")
+    AA_ref  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.)[A-Z]")
+    AA_mut  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z]\\d{1,10})\\D+")
+    stopifnot(AA_mut == "*")
+    
+    AA_pos  = as.numeric(AA_pos)
+    DNA_pos = as.numeric(DNA_pos)
+    
+    if(is.na(AA_pos) || is.na(DNA_pos)){
+      stop("NAs in positions.")
+    }
+
+    stopifnot(DNA_ref == substr(DNAseq, DNA_pos, DNA_pos))
+    stopifnot(AA_ref  == substr(AAseq, AA_pos, AA_pos))
+
+    ## since AAseq_len >= output_len, the following two conditions can not 
+    ## be true the same time
+    
+    if(AA_pos - (output_len - 1)/2 < 1){
+      AA_start = 1; AA_end = output_len
+    } else if(AA_pos + (output_len - 1)/2 > AAseq_len){
+      AA_start = AAseq_len - output_len + 1; 
+      AA_end = AAseq_len
+    } else {
+      AA_start = AA_pos - (output_len - 1)/2; 
+      AA_end = AA_pos + (output_len - 1)/2
+    }
+    
+    # set the position of mutated peptide. it does not matter if it is 
+    # at the end of the peptide
+    if(AA_pos <= output_len + 1){
+      AA_start_mut = 1; AA_end_mut = AA_pos - 1
+    } else{
+      AA_start_mut = AA_pos - output_len; 
+      AA_end_mut = AA_pos - 1
+    }
+
+    pep_df$mut_pos[i] = AA_pos - AA_start_mut + 1
+
+    pep_df$wildtype[i] = substr(AAseq, AA_start, AA_end)
+    pep_df$mutant[i]   = substr(AAseq, AA_start_mut, AA_end_mut)
+  }
+  
+  ## ------------------------------------------------------------
+  ## Frame_Shift_Del
+  ## c.472delA or c.1413_1414delTC or p.L306Yfs*7
+  ## p.R158Gfs*6 or p.L56*
+  ## ------------------------------------------------------------
+
+  # which(mut_data$Variant_Classification == "Frame_Shift_Del" & 
+  # nchar(mut_data$Reference_Allele)==4)
+  # i = 38
+  if(mut_data$Variant_Classification[i] == "Frame_Shift_Del"){
+    DNA_pos = str_extract(mut_data$HGVSc[i], "(?<=c\\.)[\\d|_]+")
+    DNA_ref = str_extract(mut_data$HGVSc[i], "(?<=c\\.[\\d|_]{1,20}del)[A|C|G|T]+")
+    AA_pos  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z])\\d+")
+    AA_ref  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.)[A-Z]")
+    AA_mut  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z]\\d{1,10})([A-Z]|\\*)")
+    
+    # p.N1671Ifs*4  corresponds to mutated peptide of IVL*
+    # so 4 means 4 aa including the mutated one and the stop codon.
+
+    if(AA_mut == "*"){
+      AA_mut_len2stop = "1"
+    }else{
+      AA_mut_len2stop  = str_extract(mut_data$HGVSp_Short[i], "(?<=fs\\*)\\d+")
+    }
+    AA_mut_len2stop = as.numeric(AA_mut_len2stop) - 1
+
+    AA_pos  = as.numeric(AA_pos)
+    DNA_pos = as.numeric(unlist(strsplit(DNA_pos, split="_")))
+    
+    if(is.na(AA_pos) || is.na(DNA_pos[1])){
+      stop("NAs in positions.")
+    }
+
+    stopifnot(DNA_ref == substr(DNAseq, DNA_pos[1], DNA_pos[length(DNA_pos)]))
+    stopifnot(AA_ref  == substr(AAseq, AA_pos, AA_pos))
+
+    ## translate the coding DNA sequence
+    DNAseq_mut = paste0(substr(DNAseq, 1, DNA_pos[1]-1), 
+                        substring(DNAseq, DNA_pos[length(DNA_pos)] + 1))
+    AAseq_mut  = as.character(translate(DNAString(DNAseq_mut)))
+    stop_pos   = gregexpr("\\*", AAseq_mut)
+    
+    if(stop_pos[[1]][1] == -1){
+      AA_mut_len2stop = nchar(AAseq_mut) - AA_pos + 1
+    }else{
+      stopifnot(stop_pos[[1]][1] == AA_pos + AA_mut_len2stop)
+    }
+    
+    stopifnot(AA_mut  == substr(AAseq_mut, AA_pos, AA_pos))
+    
+    # AA_mut_len2stop is the position of stop codon, 
+    # so we need to remove it using AA_mut_len2stop - 1
+
+    if(AA_mut_len2stop - 1  < (output_len -1)/2){
+      AA_end = AA_pos + AA_mut_len2stop - 1
+      AA_start = max(1, AA_end - output_len + 1)
+    } else if(AA_pos - (output_len - 1)/2 < 1){
+      AA_start = 1; 
+      AA_end = output_len
+    } else{
+      AA_start = AA_pos - (output_len - 1)/2; 
+      AA_end = AA_pos + (output_len - 1)/2
+    }
+    
+    pep_df$mut_pos[i] = AA_pos - AA_start + 1
+
+    pep_df$wildtype[i] = substr(AAseq, AA_start, AA_end)
+    pep_df$mutant[i]   = substr(AAseq_mut, AA_start, AA_end)
+  }
+  
+  ## ------------------------------------------------------------
+  ## Frame_Shift_Ins
+  ## c.224dupA or p.N75Kfs*15
+  ## ------------------------------------------------------------
+
+  detected = str_detect(mut_data$HGVSc[ww1], "c\\.[\\d]{1,10}dup[A-Z]")
+
+  if(mut_data$Variant_Classification[i] == "Frame_Shift_Ins"){
+    DNA_pos = str_extract(mut_data$HGVSc[i], "(?<=c\\.)\\d+")
+    DNA_mut = str_extract(mut_data$HGVSc[i], "(?<=c\\.\\d{1,20}dup)[A|C|G|T]+")
+    AA_pos  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z])\\d+")
+    AA_ref  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.)[A-Z]")
+    AA_mut  = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z]\\d{1,10})[A-Z]|\\*")
+    
+    if(AA_mut == "*"){
+      AA_mut_len2stop = "1"
+    }else{
+      AA_mut_len2stop  = str_extract(mut_data$HGVSp_Short[i], "(?<=fs\\*)\\d+")
+    }
+    AA_mut_len2stop = as.numeric(AA_mut_len2stop) - 1
+
+    AA_pos  = as.numeric(AA_pos)
+    DNA_pos = as.numeric(DNA_pos)
+    
+    if(is.na(AA_pos) || is.na(DNA_pos)){
+      stop("NAs in positions.")
+    }
+    
+    stopifnot(AA_ref  == substr(AAseq, AA_pos, AA_pos))
+
+    ## translate the coding DNA sequence
+    DNAseq_mut = paste0(substr(DNAseq, 1, DNA_pos), DNA_mut, 
+                        substring(DNAseq, DNA_pos + 1))
+    AAseq_mut  = as.character(translate(DNAString(DNAseq_mut)))
+    stop_pos   = gregexpr("\\*", AAseq_mut)
+    
+    if(stop_pos[[1]][1] == -1){
+      AA_mut_len2stop = nchar(AAseq_mut) - AA_pos + 1
+    }else{
+      stopifnot(stop_pos[[1]][1] == AA_pos + AA_mut_len2stop)
+    }
+
+    stopifnot(AA_mut  == substr(AAseq_mut, AA_pos, AA_pos))
+    
+    # AA_mut_len2stop is the position of stop condon, 
+    # so we need to remove it using AA_mut_len2stop - 1
+
+    if(AA_mut_len2stop - 1  < (output_len -1)/2){
+      AA_end = AA_pos + AA_mut_len2stop - 1
+      AA_start = max(1, AA_end - output_len + 1)
+    } else if(AA_pos - (output_len - 1)/2 < 1){
+      AA_start = 1; AA_end = output_len
+    } else{
+      AA_start = AA_pos - (output_len - 1)/2; 
+      AA_end = AA_pos + (output_len - 1)/2
+    }
+    
+    pep_df$mut_pos[i] = AA_pos - AA_start + 1
+
+    pep_df$wildtype[i] = substr(AAseq, AA_start, AA_end)
+    pep_df$mutant[i]   = substr(AAseq_mut, AA_start, AA_end)
+  }
+  
+  ## ------------------------------------------------------------
+  ## In_Frame_Del
+  ## c.1743_1745delGAA or p.K582del
+  ## ------------------------------------------------------------
+
+  if(mut_data$Variant_Classification[i] == "In_Frame_Del"){
+    AA_pos1 = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.[A-Z])\\d+")
+    AA_ref1 = str_extract(mut_data$HGVSp_Short[i], "(?<=p\\.)[A-Z]")
+    
+    if(str_detect(mut_data$HGVSp_Short[i], "_")){
+      AA_pos2 = str_extract(mut_data$HGVSp_Short[i], "\\d+(?=del)")
+      AA_ref2 = str_extract(mut_data$HGVSp_Short[i], "[A-Z](?=\\d+del)")
+    }else{
+      AA_pos2 = AA_pos1
+      AA_ref2 = AA_ref1
+    }
+
+    if(is.na(AA_pos1) || is.na(AA_pos2)){
+      stop("NAs in positions.")
+    }
+    
+    AA_pos1 = as.numeric(AA_pos1)
+    AA_pos2 = as.numeric(AA_pos2)
+
+    stopifnot(AA_ref1  == substr(AAseq, AA_pos1, AA_pos1))
+    stopifnot(AA_ref2  == substr(AAseq, AA_pos2, AA_pos2))
+
+    del_len = AA_pos2 - AA_pos1 + 1
+    AAseq_len_mut = AAseq_len - del_len
+    
+    AAseq_mut = paste0(substr(AAseq, 1, AA_pos1-1), substring(AAseq, AA_pos2+1))
+    AA_start_mut = (AA_pos1 - 1) - (output_len - 1)/2 
+    AA_end_mut   = (AA_pos1 - 1) + (output_len - 1)/2 
+
+    if(AA_start_mut < 1 ){
+      gap = 1 - AA_start_mut
+      AA_start_mut = 1
+      AA_end_mut = AA_end_mut + gap
+    }else if(AA_end_mut > AAseq_len_mut){
+      AA_end_mut = AAseq_len_mut
+      AA_start_mut = AA_end_mut - output_len + 1
+    }
+    mut_pos = (AA_pos1 - 1) - AA_start_mut + 1
+    pep_df$mut_pos[i] = mut_pos
+    
+    end_len = (output_len - del_len)/2
+    
+    ## if the deletion is longer than the desired output_len,
+    ## just take the first output_len AAs
+    if(end_len > 0){
+      AA_start = AA_pos1 - ceiling(end_len) 
+      AA_end   = AA_pos2 + floor(end_len)
+    }else{
+      AA_start = AA_pos1
+      AA_end = AA_start + output_len - 1
+    }
+    
+    if(AA_start < 1 ){
+      AA_end = AA_end + 1 - AA_start
+      AA_start = 1
+    }else if(AA_end > AAseq_len){
+      AA_start = AA_start - (AA_end - AAseq_len)
+      AA_end = AAseq_len
+    }
+
+    pep_df$wildtype[i] = substr(AAseq, AA_start, AA_end)
+    pep_df$mutant[i]   = substr(AAseq_mut, AA_start_mut, AA_end_mut)
+  }  
+}
+```
+
+
+# Write out results
+```{r}
+dim(pep_df)
+pep_df[1:2,]
+
+dim(mut_data)
+
+mut_data = cbind(mut_data, pep_df)
+fwrite(mut_data, file.path(result_dir, 
+                           sprintf("step7c_mutations_peptides_%d.tsv", output_len)))
+```
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

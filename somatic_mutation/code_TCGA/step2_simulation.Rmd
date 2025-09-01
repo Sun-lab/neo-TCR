@@ -1,0 +1,518 @@
+---
+title: "Assess the assocaition between TCR and somatic mutations"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+params:
+  chain: alpha
+---
+
+Here we want to evaluate the consequence of low TCR read-depth. For example, since many samples only have a few TCRs, would it be helpful to exlude those samples. The conclusion is "no", there is no advantage to do so. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## Parameters
+```{r}
+chain = params$chain
+
+cat("chain:", chain, "\n")
+
+stopifnot(chain == "alpha")
+```
+
+
+## R library and data input
+
+```{r}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(foreach)
+library(doParallel)
+library(qvalue)
+library(MASS)
+library(ggpubr)
+source("_utilities.R")
+
+theme_set(theme_classic())
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+```
+
+
+# Load data
+
+## Read in data
+
+These TCR data have already been aggregated at participant level and a TCR is defined by the aaSeq.  
+```{r}
+TCR_data   = fread(file.path(data_dir, sprintf("TCR_%s_5.tsv", chain)))
+mut_data   = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data)
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data)
+head(mut_data)
+head(sample_info)
+
+participants = sample_info$participant
+
+TCR_mat = get_TCR_matrix(TCR_data, participants, dichotomize = FALSE)
+mut_mat = get_mut_matrix(mut_data, participants)
+
+stopifnot(setequal(participants, colnames(TCR_mat)))
+stopifnot(setequal(participants, colnames(mut_mat)))
+
+TCR_mat = TCR_mat[,match(participants, colnames(TCR_mat))]
+mut_mat = mut_mat[,match(participants, colnames(mut_mat))]
+
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+TCR_rd  = sample_info$abundance
+TCR_rd2 = colSums(TCR_mat)
+summary(TCR_rd)
+summary(TCR_rd2)
+
+table(TCR_rd > 10)
+summary(TCR_rd2[TCR_rd <= 10])
+stopifnot(all(TCR_rd >= TCR_rd2))
+```
+
+## Check the distribution of TCRs
+
+Some negative binomial regression fail, and thus we use tryCatch here.
+
+```{r fig.width=6, fig.height=9, warning = FALSE}
+tb1 = table(c(TCR_mat))
+tb1
+(tb1)/sum(tb1)
+
+pars = matrix(NA, nrow=nrow(TCR_mat), ncol=5)
+
+for(i in 1:nrow(TCR_mat)){
+  if(i %% 200 == 0) {cat (i, date(), "\n")}
+  yi = TCR_mat[i,]
+
+  gi1 <- tryCatch({
+    gi1 = glm.nb(yi ~ log10(TCR_rd + 0.5))
+    gi1
+    }, error = function(e) {NULL})
+  
+  if(is.null(gi1)){ next }
+  
+  gi0 = glm.nb(yi ~ 1)
+  ai  = anova(gi0, gi1)
+  
+  pars[i,1:2] = as.numeric(gi1$coefficients)
+  pars[i,3] = gi1$theta
+  pars[i,4] = gi1$SE.theta
+  pars[i,5] = ai$`Pr(Chi)`[2]
+}
+
+colnames(pars) = c("b0", "b1", "theta", "theta_SE", "pval")
+dim(pars)
+pars[1:2,]
+
+pars = as.data.frame(pars)
+
+glist = list()
+
+for(k in 1:ncol(pars)){
+  var_k = names(pars)[k]
+    
+  if(var_k == "theta" || var_k == "theta_SE"){
+    gk = ggplot(pars, aes(x = log10(.data[[var_k]]))) + 
+      geom_histogram(bins = 50, fill = "lightblue", color = "darkblue")
+  }else{
+    gk = ggplot(pars, aes(x = .data[[var_k]])) + 
+      geom_histogram(bins = 50, fill = "lightblue", color = "darkblue")
+  }
+  glist[[k]] = gk
+}
+
+glist[[6]] = ggplot(pars, aes(x = -log10(pval))) +  
+  geom_histogram(bins = 50, fill = "lightblue", color = "darkblue")
+
+
+ggarrange(plotlist = glist, nrow=3, ncol=2)
+
+```
+
+## Scatter plot of nb regression results
+
+By the definition used in glm.nb, variance = $\mu + \mu^2/\theta$, threfore large theta means closer to a Poisson distribution. 
+
+```{r fig.width=6, fig.height=9}
+pars$prop2 = rowMeans(TCR_mat > 1)
+
+glist2 = list()
+glist2[[1]] = ggplot(data = pars, mapping = aes(x = log10(theta), y = log10(theta_SE))) +
+  geom_point(aes(alpha = 0.5)) + theme(legend.position = "none")
+
+glist2[[2]] = ggplot(data = pars, mapping = aes(x = prop2, y = log10(theta))) +
+  geom_point(aes(alpha = 0.5)) + theme(legend.position = "none")
+
+glist2[[3]] = ggplot(data = pars, mapping = aes(x = b0, y = log10(theta))) +
+  geom_point(aes(alpha = 0.5)) + theme(legend.position = "none")
+
+glist2[[4]] = ggplot(data = pars, mapping = aes(x = b0, y = b1)) +
+  geom_point(aes(alpha = 0.5)) + theme(legend.position = "none")
+
+glist2[[5]] = ggplot(data = pars, mapping = aes(x = b1, y = -log10(pval))) +
+  geom_point(aes(alpha = 0.5)) + theme(legend.position = "none")
+
+glist2[[6]] = ggplot(data = pars, mapping = aes(x = -log10(pval), y = log10(theta))) +
+  geom_point(aes(alpha = 0.5)) + theme(legend.position = "none")
+
+ggarrange(plotlist = glist2, nrow=3, ncol=2)
+
+```
+
+## Check a few TCRs with very large or very small theta
+
+Note that large theta means smaller variance. It seems the theta is small if there are non-zero counts for smaller TCR depth
+
+```{r fig.width=6, fig.height=9}
+w_large_theta = which(pars$prop2 > 0 & pars$theta > 100)
+w_small_theta = which(pars$prop2 > 0 & pars$theta < 0.01)
+
+length(w_large_theta)
+length(w_small_theta)
+
+glist_large = glist_small = list()
+
+for(i in 1:6){
+  y_large = TCR_mat[w_large_theta[i],]
+  y_small = TCR_mat[w_small_theta[i],]
+  
+  df1 = data.frame(TCR_rd, y_large_theta = y_large, y_small_theta = y_small)
+  
+  glist_large[[i]] = ggplot(data = df1, 
+                            aes(x = log10(TCR_rd + 0.5), y = y_large_theta)) + 
+    geom_pointdensity() + scale_color_viridis() + theme(legend.position = "none")
+  
+  glist_small[[i]] = ggplot(data = df1, 
+                            aes(x = log10(TCR_rd + 0.5), y = y_small_theta)) + 
+    geom_pointdensity() + scale_color_viridis() + theme(legend.position = "none")
+}
+
+ggarrange(plotlist = glist_large, nrow=3, ncol=2)
+ggarrange(plotlist = glist_small, nrow=3, ncol=2)
+
+```
+
+## Check a few TCRs with large or small slope
+
+There is a strong negative association between b0 and b1. The mean value (reflected by b0) is larger if there are more non-zero counts. When there are more non-zero counts, they are likely observed at lower read-depth, and thus smaller slope b1? That make sense, but it is not clear why the relation between b0 and b1 is stron linear. 
+
+```{r fig.width=6, fig.height=9}
+quantile(pars$b1, probs = c(0.01, 0.05, 0.95, 0.99), na.rm = TRUE)
+
+w_large_b1 = which(pars$prop2 > 0 & pars$b1 > 4)
+w_small_b1 = which(pars$prop2 > 0 & pars$b1 < 0.8)
+
+length(w_large_b1)
+length(w_small_b1)
+
+glist_large = glist_small = list()
+
+for(i in 1:6){
+  y_large = TCR_mat[w_large_b1[i],]
+  y_small = TCR_mat[w_small_b1[i],]
+  
+  df1 = data.frame(TCR_rd, y_large_b1 = y_large, y_small_b1 = y_small)
+  
+  glist_large[[i]] = ggplot(data = df1, 
+                            aes(x = log10(TCR_rd + 0.5), y = y_large_b1)) + 
+    geom_pointdensity() + scale_color_viridis() + theme(legend.position = "none")
+  
+  glist_small[[i]] = ggplot(data = df1, 
+                            aes(x = log10(TCR_rd + 0.5), y = y_small_b1)) + 
+    geom_pointdensity() + scale_color_viridis() + theme(legend.position = "none")
+}
+
+ggarrange(plotlist = glist_large, nrow=3, ncol=2)
+ggarrange(plotlist = glist_small, nrow=3, ncol=2)
+
+```
+
+
+## Simulate TCR data
+
+Use the results from the following a few examples to guide the simulation.
+
+Results when we restrict the samples with TCR read-depth larger than 10. Note that we only consider alpha chain here.
+
+```
+CAGTSGTYKYIF	BRAF:7:140453136:A:T	0.0009
+CAVRGTYKYIF      TP53:17:7578442:T:C 4.304067e-06
+CAVRGNDYKLSF   PIK3CA:3:178952090:G:C 5.545693e-06
+```
+
+When we use all the samples
+
+```
+CAVRGTYKYIF      TP53:17:7578442:T:C 1.375570e-06
+```
+
+### Check the association strength between somatic mutation and TCR
+
+For simplicity, here we only consider alpha chain
+
+```{r fig.width=6, fig.height=3, warning = FALSE}
+par1 = apply(pars, 2, median, na.rm = TRUE)
+par1
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+n_mut = rowSums(mut_mat)
+summary(n_mut)
+sort(n_mut, decreasing = TRUE)[1:10]
+
+# repeat BRAF mutation here since it corresponds to two TCRs
+
+mut2check = c("BRAF:7:140453136:A:T", 
+              "TP53:17:7578442:T:C", "PIK3CA:3:178952090:G:C")
+
+x_mat = mut_mat[match(mut2check, rownames(mut_mat)),]
+dim(x_mat)
+x_mat[1:2,1:4]
+rowSums(x_mat)
+
+# Just check three TCRs here
+TCR2check = c("CAGTSGTYKYIF", "CAVRGTYKYIF", "CAVRGNDYKLSF")
+
+y_mat = TCR_mat[match(TCR2check, rownames(TCR_mat)),]
+dim(y_mat)
+y_mat[,1:4]
+rowSums(y_mat)
+
+df_res = data.frame(mutation = mut2check[1:3], TCR = TCR2check[1:3], 
+                    pval=NA, pval_subset=NA, b1=NA, b1_subset=NA)
+
+for(k in 1:3){
+  y_k = y_mat[k,]
+  x_k = x_mat[k,]
+  
+  df_k = data.frame(y=y_k, x=as.factor(x_k), rd = TCR_rd)
+
+  gk  = glm.nb(y ~ log10(rd + 0.5) + x, data=df_k)
+  gk0 = glm.nb(y ~ log10(rd + 0.5), data=df_k)
+  ak  = anova(gk, gk0)
+  df_res$pval[k] = ak$`Pr(Chi)`[2]
+  df_res$b1[k] = coef(gk)[["x1"]]
+
+  df_k_sub = df_k[df_k$rd > 10,]
+  gk  = glm.nb(y ~ log10(rd + 0.5) + x, data=df_k_sub)
+  gk0 = glm.nb(y ~ log10(rd + 0.5), data=df_k_sub)
+  ak  = anova(gk, gk0)
+  df_res$pval_subset[k] = ak$`Pr(Chi)`[2]
+  df_res$b1_subset[k] = coef(gk)[["x1"]]
+
+  gp_k = ggplot(data = df_k, aes(x=log10(rd + 0.5), y=y)) + 
+    geom_pointdensity() + scale_color_viridis() + 
+    geom_vline(xintercept = log10(10.5)) + 
+    theme(legend.position = "none") + 
+    ggtitle(paste(mut2check[k], TCR2check[k])) + 
+    facet_wrap(~ x) 
+  print(gp_k)
+}
+
+df_res
+```
+
+### Simulate data for less frequent mutation of BRAF:7:140453136:A:T
+
+```{r fig.width=3, fig.height=3, warning=FALSE}
+x = x_mat[1,]
+sum(x)
+
+mu = par1["b0"] + par1["b1"]*log10(TCR_rd + 0.5) + 2.4*x
+par(bty = "n")
+plot(log10(TCR_rd + 0.5), mu)
+
+set.seed(39)
+
+stopifnot(length(mu) == ncol(TCR_mat))
+y_simu = rnbinom(n=ncol(TCR_mat), mu=exp(mu), size=par1["theta"])
+par(bty = "n")
+plot(mu, y_simu)
+
+set.seed(39)
+
+rd_cutoff = 10
+table(TCR_rd > rd_cutoff)
+
+n_simu = 200
+pval_df = data.frame(p_all = rep(NA, n_simu), p_subset = rep(NA, n_simu))
+
+for(i in 1:n_simu){
+  y_simu = rnbinom(n=ncol(TCR_mat), mu=exp(mu), size=par1["theta"])
+  y_all  = as.numeric(y_simu > 0)
+  df_i   = data.frame(y = y_all, x = x, rd = TCR_rd)
+  
+  l0 = glm(y ~ rd, family = "binomial", data = df_i)
+  l1 = glm(y ~ x * rd, family = "binomial", data = df_i)
+  lrt = anova(l0, l1, test = "LRT")
+  pval_df$p_all[i] = lrt$`Pr(>Chi)`[2]
+  
+  df_i_subset = df_i[df_i$rd > rd_cutoff,]
+  l0 = glm(y ~ rd, family = "binomial", data = df_i_subset)
+  l1 = glm(y ~ x * rd, family = "binomial", data = df_i_subset)
+  lrt = anova(l0, l1, test = "LRT")
+
+  pval_df$p_subset[i] = lrt$`Pr(>Chi)`[2]
+}
+
+ggplot(pval_df, aes(x = p_all)) + 
+      geom_histogram(breaks = seq(0,1,by=0.02), fill = "lightblue", color = "darkblue")
+
+ggplot(pval_df, aes(x = p_subset)) + 
+      geom_histogram(breaks = seq(0,1,by=0.02), fill = "lightblue", color = "darkblue")
+
+ggplot(pval_df, aes(x = -log10(p_all), y = -log10(p_subset))) + 
+      geom_point(alpha = 0.5) + geom_abline(slope = 1, intercept = 0)
+
+```
+
+### Simulate data for less frequent mutation of BRAF:7:140453136:A:T
+
+```{r fig.width=3, fig.height=3, warning=FALSE}
+x = x_mat[2,]
+sum(x)
+mu = par1["b0"] + par1["b1"]*log10(TCR_rd + 0.5) + 5.4*x
+par(bty = "n")
+plot(log10(TCR_rd + 0.5), mu)
+
+set.seed(39)
+
+stopifnot(length(mu) == ncol(TCR_mat))
+y_simu = rnbinom(n=ncol(TCR_mat), mu=exp(mu), size=par1["theta"])
+par(bty = "n")
+plot(mu, y_simu)
+
+set.seed(39)
+
+rd_cutoff = 10
+table(TCR_rd > rd_cutoff)
+
+n_simu = 200
+pval_df = data.frame(p_all = rep(NA, n_simu), p_subset = rep(NA, n_simu))
+
+for(i in 1:n_simu){
+  y_simu = rnbinom(n=ncol(TCR_mat), mu=exp(mu), size=par1["theta"])
+  y_all  = as.numeric(y_simu > 0)
+  df_i   = data.frame(y = y_all, x = x, rd = TCR_rd)
+  
+  l0 = glm(y ~ rd, family = "binomial", data = df_i)
+  l1 = glm(y ~ x * rd, family = "binomial", data = df_i)
+  lrt = anova(l0, l1, test = "LRT")
+  pval_df$p_all[i] = lrt$`Pr(>Chi)`[2]
+  
+  df_i_subset = df_i[df_i$rd > rd_cutoff,]
+  l0 = glm(y ~ rd, family = "binomial", data = df_i_subset)
+  l1 = glm(y ~ x * rd, family = "binomial", data = df_i_subset)
+  lrt = anova(l0, l1, test = "LRT")
+
+  pval_df$p_subset[i] = lrt$`Pr(>Chi)`[2]
+}
+
+ggplot(pval_df, aes(x = p_all)) + 
+      geom_histogram(breaks = seq(0,1,by=0.02), fill = "lightblue", color = "darkblue")
+
+ggplot(pval_df, aes(x = p_subset)) + 
+      geom_histogram(breaks = seq(0,1,by=0.02), fill = "lightblue", color = "darkblue")
+
+ggplot(pval_df, aes(x = -log10(p_all), y = -log10(p_subset))) + 
+      geom_point(alpha = 0.5) + geom_abline(slope = 1, intercept = 0)
+
+```
+
+### Simulate data for less frequent mutation of PIK3CA:3:178952090:G:C
+
+```{r fig.width=3, fig.height=3, warning=FALSE}
+x = x_mat[3,]
+sum(x)
+mu = par1["b0"] + par1["b1"]*log10(TCR_rd + 0.5) + 5.4*x
+par(bty = "n")
+plot(log10(TCR_rd + 0.5), mu)
+
+set.seed(39)
+
+stopifnot(length(mu) == ncol(TCR_mat))
+y_simu = rnbinom(n=ncol(TCR_mat), mu=exp(mu), size=par1["theta"])
+par(bty = "n")
+plot(mu, y_simu)
+
+set.seed(39)
+
+rd_cutoff = 10
+table(TCR_rd > rd_cutoff)
+
+n_simu = 200
+pval_df = data.frame(p_all = rep(NA, n_simu), p_subset = rep(NA, n_simu))
+
+for(i in 1:n_simu){
+  y_simu = rnbinom(n=ncol(TCR_mat), mu=exp(mu), size=par1["theta"])
+  y_all  = as.numeric(y_simu > 0)
+  df_i   = data.frame(y = y_all, x = x, rd = TCR_rd)
+  
+  l0 = glm(y ~ rd, family = "binomial", data = df_i)
+  l1 = glm(y ~ x * rd, family = "binomial", data = df_i)
+  lrt = anova(l0, l1, test = "LRT")
+  pval_df$p_all[i] = lrt$`Pr(>Chi)`[2]
+  
+  df_i_subset = df_i[df_i$rd > rd_cutoff,]
+  l0 = glm(y ~ rd, family = "binomial", data = df_i_subset)
+  l1 = glm(y ~ x * rd, family = "binomial", data = df_i_subset)
+  lrt = anova(l0, l1, test = "LRT")
+
+  pval_df$p_subset[i] = lrt$`Pr(>Chi)`[2]
+}
+
+ggplot(pval_df, aes(x = p_all)) + 
+      geom_histogram(breaks = seq(0,1,by=0.02), fill = "lightblue", color = "darkblue")
+
+ggplot(pval_df, aes(x = p_subset)) + 
+      geom_histogram(breaks = seq(0,1,by=0.02), fill = "lightblue", color = "darkblue")
+
+ggplot(pval_df, aes(x = -log10(p_all), y = -log10(p_subset))) + 
+      geom_point(alpha = 0.5) + geom_abline(slope = 1, intercept = 0)
+
+```
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

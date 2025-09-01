@@ -1,0 +1,432 @@
+---
+title: "Summerize cross validation for alpha or beta chain"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+params:
+  chain: beta
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## Parameters
+```{r}
+chain = params$chain
+
+cat("chain:", chain, "\n")
+```
+
+## R library
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(viridis)
+library(pROC)
+library(stringr)
+library(reshape2)
+library(flextable)
+
+source("../_utilities.R")
+
+theme_set(theme_classic())
+ 
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+res_dir  = "~/research/data/TCR/TCGA/_results/_cross_validation"
+```
+
+# Summrize results
+
+## Read in data
+```{r}
+TCR_data   = fread(file.path(data_dir, sprintf("TCR_%s_5.tsv", chain)))
+mut_data   = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data)
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data)
+head(mut_data)
+head(sample_info)
+```
+
+## Result files
+
+```{r}
+res_files = list.files(res_dir, sprintf("train_%s_wo_", chain))
+res_files
+```
+
+## Check the mutations that appear 5 or more times
+
+### Generate prediction results
+
+```{r}
+result_matrix = NULL
+
+pcuts = c(5e-3, 1e-2, 5e-2, 1e-1, 2e-1, 5e-1)
+
+for(f1 in res_files){
+  r1 = fread(file.path(res_dir, f1))
+  c_type = str_extract(f1, "(?<=_wo_)\\w+")
+  
+  cat("\n")
+  cat("cancer type", c_type, "\n")
+  cat(date(), "\n")
+
+  d1 = get_dat_one_cancer(c_type, TCR_data, mut_data, sample_info)
+  
+  mut1 = d1$mut_mat
+  tcr1 = d1$TCR_mat
+  
+  n_per_mut = rowSums(mut1)
+  ww3 = which(n_per_mut >= 3)
+  
+  if(length(ww3) == 0){
+    cat("no mutation appear in 3 or more subjects.\n")
+  }else{
+    mut_nms = rownames(mut1)[ww3]
+    
+    cat(sprintf("there are %d mutation appear in 3 or more subjects.\n", 
+                length(ww3)))
+    
+    mut_nms = mut_nms[which(mut_nms %in% r1$mut)]
+    
+    cat(sprintf("%d mutations are associated with at least one TCR.\n", 
+                length(mut_nms)))
+    
+
+    for(j in 1:length(mut_nms)){
+      mut_j = mut1[rownames(mut1) == mut_nms[j],]
+      res_j = r1[which(r1$mut == mut_nms[j]),,drop = FALSE]
+      
+      for(i in 1:length(pcuts)){
+        pcut_i = pcuts[i]
+        ww_i = which(res_j$pval_LRT < pcut_i)
+        
+        if(length(ww_i) == 0){ next }
+        
+        tcr_ji = res_j$TCR[ww_i]
+        ww_tcr = which(rownames(tcr1) %in% tcr_ji)
+        if(length(ww_tcr) == 0){ next }
+        
+        tcr_pred_ji = colSums(tcr1[ww_tcr,,drop=FALSE] > 0)
+        
+        auc_val = auc(response=mut_j, predictor=tcr_pred_ji, 
+                      quiet=TRUE, direction="<")
+
+        auc_ci  = ci.auc(response=mut_j, predictor=tcr_pred_ji, 
+                         quiet=TRUE, direction="<")
+        auc_ci  = signif(auc_ci, 3)
+        
+        df1 = data.frame(cancer=c_type, mut=mut_nms[j], auc=signif(auc_val,3), 
+                         auc_ci_low=auc_ci[1], auc_ci_med=auc_ci[2], 
+                         auc_ci_upper=auc_ci[3], pcut = pcut_i)
+        result_matrix = rbind(result_matrix, df1)
+      }
+    }
+  }
+}
+```
+
+### Summerize prediction results
+
+```{r fig.width=6, fig.height=3}
+dim(result_matrix)
+result_matrix = result_matrix[order(result_matrix$auc, decreasing = TRUE),]
+flextable(result_matrix[1:5,])
+
+result_matrix[result_matrix$mut == "PIK3CA:3:178936091:G:A",]
+
+
+table(result_matrix$pcut)
+summary(result_matrix$auc)
+
+summary(result_matrix$auc[result_matrix$pcut==0.02])
+summary(result_matrix$auc[result_matrix$pcut==0.1])
+summary(result_matrix$auc[result_matrix$pcut==0.2])
+summary(result_matrix$auc[result_matrix$pcut==0.5])
+
+pcuts = unique(result_matrix$pcut)
+pcuts = sort(pcuts[pcuts > 0.0009])
+min_auc_4_pcuts = rep(NA, length(pcuts))
+
+auc_cutoffs = seq(0.51, 0.7, by=0.001)
+
+for(k in 1:length(pcuts)){
+  
+  pcut1 = pcuts[k]
+  
+  g1 = ggplot(result_matrix[result_matrix$pcut==pcut1,], aes(x=auc)) +
+  geom_histogram(color="darkblue", fill="lightblue", 
+                 breaks=seq(0.29, 0.87, by=0.02)) + scale_y_log10() + 
+  geom_vline(xintercept = c(0.5), linetype = "dashed") + 
+    ggtitle(sprintf("pval-cutoff = %.1e", pcut1)) + 
+    theme_classic(base_size = 14) + xlab("AUC") + ylab("Count")
+  
+  auc_vals = result_matrix$auc[result_matrix$pcut==pcut1]
+  fdrs = rep(NA, length(auc_cutoffs))
+  
+  for(i in 1:length(auc_cutoffs)){
+    auc1 = auc_cutoffs[i]
+    nD = sum(auc_vals > auc1)
+    if(nD == 0){ fdrs[i] = 0 }
+    else{ fdrs[i] = min(1, sum(auc_vals < 1-auc1)/nD) }
+  }
+  
+  for(i in length(auc_cutoffs):2){
+    if(fdrs[i-1] < fdrs[i]){
+      fdrs[i-1] = fdrs[i]
+    }
+  }
+  
+  df1 = data.frame(auc = auc_cutoffs, fdr = fdrs)
+  
+  min_auc_4_pcuts[k] = min(auc_cutoffs[fdrs < 0.2])
+
+  g2 = ggplot(df1, aes(x = auc, y = fdr)) + 
+    geom_line() + geom_hline(yintercept = 0.2, linetype = "dashed") + 
+    geom_vline(xintercept = min_auc_4_pcuts[k], linetype = "dashed") + 
+    geom_text(aes(label = sprintf("%.3f", min_auc_4_pcuts[k])), 
+              x = min_auc_4_pcuts[k], y = 1.0, hjust = -0.2) + 
+    ylim(0, 1) + xlim(0.5, 0.75)  + 
+    theme_classic(base_size = 14) + xlab("AUC") + ylab("FDR")
+
+  gg1 = ggarrange(g1, g2, ncol = 2, nrow = 1)
+  
+  print(gg1)
+
+}
+
+df2 = data.frame(pcuts = pcuts, min_auc_4_fdr = min_auc_4_pcuts)
+ggplot(df2, aes(x = -log10(pcuts), y = min_auc_4_fdr)) + 
+  geom_point() + ylab("min AUC for FDR < 0.2") + 
+    theme_classic(base_size = 14)
+
+w2kp = NULL
+for(k in 1:length(pcuts)){
+  pcut1 = pcuts[k]
+  auck = min_auc_4_pcuts[k]
+  w2kp = c(w2kp, which(result_matrix$pcut == pcut1 & result_matrix$auc > auck))
+}
+length(w2kp)
+
+result_sub = result_matrix[w2kp, 
+                           c("cancer", "auc", "auc_ci_low", "pcut", "mut")]
+
+result_sub$mut_30 = substring(result_sub$mut, 1, 30)
+result_sub = result_sub[order(result_sub$auc, decreasing = TRUE),]
+dim(result_sub)
+flextable(result_sub[1:2,])
+flextable(result_sub[1:min(20, nrow(result_sub)),c(1:4,6)])
+
+table(result_matrix$pcut)
+table(result_sub$pcut)
+```
+
+## Further select the p-value cutoff that gives the best AUC
+
+```{r}
+
+result_sub = setDT(result_sub)
+setorder(result_sub, cancer, mut, -auc, pcut)
+df1 <- result_sub[, .SD[1], by = .(cancer, mut)][order(-auc),]
+dim(df1)
+flextable(df1[1:10, c("cancer", "mut", "auc", "pcut")])
+
+summary(df1$pcut)
+table(df1$pcut)
+round(table(df1$pcut)/nrow(df1),2)
+
+sort(table(df1$cancer), decreasing = TRUE)
+
+t_mut = table(df1$mut)
+sort(t_mut[t_mut > 1], decreasing = TRUE)
+
+df_tmp = df1
+mut_tmp = "LZTR1:22:21343966:GAGGAGGTGAGGGGCGTGGGGAGCCAGGGCGCAGGTA:-"
+df_tmp$mut[df_tmp$mut == mut_tmp] = "LZTR1:22:21343966:G***A:-"
+flextable(df_tmp[order(df_tmp$auc, decreasing = TRUE), 
+                 c("cancer", "mut", "auc", "pcut")])
+
+result_sub$mut_30 = NULL
+
+write.table(result_sub, row.names = FALSE, 
+            file.path(res_dir, sprintf("cross_validation_res_%s.tsv", chain)), 
+            sep="\t")
+
+write.table(df2, row.names = FALSE, 
+            file.path(res_dir, sprintf("cv_%s_auc_4_pcuts.tsv", chain)), 
+            sep="\t")
+```
+
+## Classify multiple mutations together. 
+
+Since many somatic mutations are rare and thus we cannot evaluate the classification accuracy reliably. Here we try to concatenate the mutation data of multiple mutations and try to predict them. We select the mutations with certain frequencies. ```n_mut_lower``` and  ```n_mut_upper``` are lower and upper bound of mutation frequnceis. 
+
+```{r}
+
+get_auc <- function(res_files, pcuts, TCR_data, mut_data, sample_info,
+                    n_mut_lower, n_mut_upper){
+  
+  if(n_mut_lower < 1){ stop("n_mut_lower should 1 or larger") }
+  stopifnot(n_mut_upper > n_mut_lower)
+  
+  result_aggre = NULL
+
+  for(f1 in res_files){
+    r1 = fread(file.path(res_dir, f1))
+    c_type = str_extract(f1, "(?<=_wo_)\\w+")
+    
+    cat("\n")
+    cat("cancer type", c_type, "\n")
+    cat(date(), "\n")
+  
+    d1 = get_dat_one_cancer(c_type, TCR_data, mut_data, sample_info)
+    
+    mut1 = d1$mut_mat
+    tcr1 = d1$TCR_mat
+    
+    n_per_mut = rowSums(mut1)
+    ww_aggr = which(n_per_mut >= n_mut_lower & n_per_mut <= n_mut_upper)
+    
+    if(length(ww_aggr) == 0){
+      cat("no mutation can be aggregated\n")
+    }else{
+      mut_nms = rownames(mut1)[ww_aggr]
+      
+      cat(sprintf("%d mutation (%d <= freq <= %d) to be aggregated\n", 
+                  length(ww_aggr), n_mut_lower, n_mut_upper))
+      
+      mut_nms = mut_nms[which(mut_nms %in% r1$mut)]
+      
+      cat(sprintf("%d mutations are associated with at least one TCR.\n", 
+                  length(mut_nms)))
+      
+      if(length(mut_nms) == 0){ 
+        next 
+      }
+      
+      mut_mtrx = mut1[rownames(mut1) %in% mut_nms,,drop=FALSE]
+      dim(mut_mtrx)
+      
+      for(i in 1:length(pcuts)){
+        pcut_i = pcuts[i]
+        
+        y_i = NULL
+        x_i = NULL
+        n_mut = 0
+        
+        for(j in 1:length(mut_nms)){
+          mut_j = as.numeric(mut_mtrx[which(rownames(mut_mtrx) == mut_nms[j]),])
+          res_j = r1[which(r1$mut == mut_nms[j]),,drop = FALSE]
+        
+          ww_i = which(res_j$pval_LRT < pcut_i)
+          
+          if(length(ww_i) == 0){ next }
+          
+          tcr_ji = res_j$TCR[ww_i]
+          ww_tcr = which(rownames(tcr1) %in% tcr_ji)
+          if(length(ww_tcr) == 0){ next }
+          
+          tcr_pred_ji = colSums(tcr1[ww_tcr,,drop=FALSE] > 0)
+          
+          y_i = c(y_i, mut_j)
+          x_i = c(x_i, tcr_pred_ji)
+          n_mut = n_mut + 1
+        }
+        
+        # cat("pcut", pcut_i, "\n")
+        # cat("combining the data of", n_mut, "mutations\n")
+        
+        if(n_mut > 0){
+          auc_ci  = ci.auc(response=y_i, predictor=x_i, 
+                               quiet=TRUE, direction="<")
+              
+          df1 = data.frame(cancer=c_type, pcut = pcut_i, auc=auc_ci[2], 
+                               auc_ci_low=auc_ci[1], auc_ci_upper=auc_ci[3])
+          result_aggre = rbind(result_aggre, df1)
+        }
+      }
+    }
+  }
+  result_aggre
+}
+
+```
+
+## Aggregate rare mutations
+
+```{r}
+pcuts = c(1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 1e-1*(1:5))
+
+n_mut_lower = 1
+n_mut_upper = 4
+
+res_agg1 = get_auc(res_files, pcuts, TCR_data, mut_data, sample_info,
+                    n_mut_lower, n_mut_upper)
+
+dim(res_agg1)
+res_agg1 = res_agg1[order(res_agg1$auc, decreasing = TRUE),]
+res_agg1[1:5,]
+summary(res_agg1$auc)
+res_agg1[which(res_agg1$auc > 0.52),]
+
+n_mut_lower = 5
+n_mut_upper = 10
+
+res_agg2 = get_auc(res_files, pcuts, TCR_data, mut_data, sample_info,
+                    n_mut_lower, n_mut_upper)
+
+dim(res_agg2)
+res_agg2 = res_agg2[order(res_agg2$auc, decreasing = TRUE),]
+res_agg2[1:5,]
+summary(res_agg2$auc)
+
+res_agg2[which(res_agg2$auc > 0.55),]
+
+
+n_mut_lower = 11
+n_mut_upper = 1000
+
+res_agg3 = get_auc(res_files, pcuts, TCR_data, mut_data, sample_info,
+                    n_mut_lower, n_mut_upper)
+
+dim(res_agg3)
+res_agg3 = res_agg3[order(res_agg3$auc, decreasing = TRUE),]
+res_agg3[1:5,]
+summary(res_agg3$auc)
+
+res_agg3[which(res_agg3$auc > 0.52),]
+```
+
+# Session information
+
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

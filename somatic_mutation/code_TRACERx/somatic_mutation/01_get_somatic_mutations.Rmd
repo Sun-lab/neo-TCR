@@ -1,0 +1,111 @@
+---
+title: "Get somatic mutations"
+author: "Bo Yu"
+date: "2024-02-26"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/fh/scratch/delete90/sun_w/yub/tcr/tracerx/somatic_mutation')
+```
+
+```{r}
+library(dplyr)
+library(ggpubr)
+```
+
+## Load mutation data
+
+```{r Load mutation data}
+# Load data & Rename mutation id
+# Downloaded from https://zenodo.org/records/7822002
+mut_raw = as_tibble(fst::read.fst('../figurecode/data/20221109_TRACERx421_mutation_table.fst'))
+
+mut_raw$real_mutation_id = paste0(mut_raw$chr, ':', mut_raw$start, '-', mut_raw$stop, ':', 
+                                  mut_raw$ref, '->', mut_raw$var, ':', mut_raw$Hugo_Symbol)
+```
+
+## Summary
+
+```{r Summary}
+# Patients
+patients = sort(unique(mut_raw$patient_id))
+
+head(patients)
+
+tail(patients)
+
+length(patients)
+
+# Tumors
+tumors = sort(unique(mut_raw$tumour_id))
+
+head(tumors)
+
+tail(tumors)
+
+length(tumors)
+
+# Mutations
+muts = sort(unique(mut_raw$real_mutation_id))
+
+head(muts)
+
+tail(muts)
+
+length(muts)
+```
+
+## Build mutation matrix
+
+```{r Build mutation matrix}
+# Build mutation matrix
+mut = matrix(NA, nrow = length(tumors), ncol = length(muts), dimnames = list(tumors, muts))
+for (tumor in tumors) {
+  curr_muts = mut_raw$real_mutation_id[mut_raw$tumour_id == tumor]
+  mut[tumor, ] = muts %in% curr_muts
+}
+
+
+# Check missing value
+any(is.na(mut))
+
+
+# Number of tumors where a mutation appears
+ntumor_per_mut = tibble(ntumor = colSums(mut))
+
+ggplot(ntumor_per_mut, aes(ntumor)) +
+  geom_histogram(aes(y = log10(after_stat(count) + 1)), binwidth = 1) +
+  labs(x = 'Number of tumors where a mutation appears', y = 'log10(count + 1)') +
+  theme_pubr()
+
+# Top-frequency mutations
+muts[ntumor_per_mut > 30]
+
+
+# Number of mutations a tumor has
+nmut_per_tumor = tibble(nmut = rowSums(mut))
+
+ggplot(nmut_per_tumor, aes(nmut)) +
+  geom_histogram(aes(y = log10(after_stat(count) + 1))) +
+  labs(x = 'Number of mutations a tumor has', y = 'log10(count + 1)') +
+  theme_pubr()
+
+# Top-frequency tumors
+tumors[nmut_per_tumor > 9000]
+```
+
+## Save
+
+```{r Save}
+saveRDS(mut_raw, file = 'mut_df.rds')
+saveRDS(mut, file = 'mut_mat.rds')
+```
+
+```{r}
+sessionInfo()
+```

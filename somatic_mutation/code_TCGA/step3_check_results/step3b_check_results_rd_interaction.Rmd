@@ -1,0 +1,330 @@
+---
+title: "Aseess the assocaitions between TCRs and somatic mutations"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+params:
+  chain: alpha
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## Parameters
+```{r}
+chain = params$chain
+
+cat("chain:", chain, "\n")
+```
+
+
+## R library and data input
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(foreach)
+library(doParallel)
+library(qvalue)
+library(pROC)
+library(stringr)
+source("../_utilities.R")
+
+theme_set(theme_classic())
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+result_dir = "~/research/data/TCR/TCGA/_results"
+```
+
+
+## Load data
+
+```{r}
+TCR_data    = fread(file.path(data_dir, sprintf("TCR_%s_5.tsv", chain)))
+mut_data    = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data)
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data)
+head(mut_data)
+head(sample_info)
+
+participants = sample_info$participant
+
+TCR_mat = get_TCR_matrix(TCR_data, participants)
+mut_mat = get_mut_matrix(mut_data, participants)
+
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+stopifnot(setequal(participants, colnames(TCR_mat)))
+stopifnot(setequal(participants, colnames(mut_mat)))
+
+TCR_mat = TCR_mat[,match(participants, colnames(TCR_mat))]
+mut_mat = mut_mat[,match(participants, colnames(mut_mat))]
+
+TCR_mat[1:2,1:4]
+mut_mat[1:2,1:4]
+sample_info[1:4,]
+```
+
+## load association results
+
+Results with or without read-depth interaction
+
+```{r}
+res0 = fread(file.path(result_dir, 
+                      sprintf("TCR_%s_mut_associations.tsv", chain)))
+res0$gene = str_extract(res0$mut, "[A-Za-z0-9]+(?=:)")
+
+dim(res0)
+res0[1:2,]
+
+table(nchar(res0$mut) < 1000)
+summary(res0$pval_LRT)
+
+res1 = fread(file.path(result_dir, 
+                      sprintf("TCR_%s_mut_asso_rd_interaction.tsv", chain)))
+res1$gene = str_extract(res1$mut, "[A-Za-z0-9]+(?=:)")
+
+dim(res1)
+res1[1:2,]
+
+table(nchar(res1$mut) < 1000)
+summary(res1$pval_LRT)
+```
+
+## Compare p-values
+```{r fig.width=4, fig.height=3}
+ggplot(res0, aes(x=pval_LRT))+
+  geom_histogram(color="darkblue", fill="lightblue", 
+                 breaks=seq(0,0.5,by=0.01)) + 
+  ggtitle("without read-depth interaction")
+
+ggplot(res1, aes(x=pval_LRT))+
+  geom_histogram(color="darkblue", fill="lightblue", 
+                 breaks=seq(0,0.5,by=0.01)) + 
+  ggtitle("with read-depth interaction")
+
+res = merge(res0, res1, by = c("TCR", "mut", "gene"), all = TRUE, 
+            suffixes = c("_without_rd_x", "_with_rd_x"))
+dim(res)
+res[1:2,]
+
+table(is.na(res$pval_LRT_without_rd_x))
+table(is.na(res$pval_LRT_with_rd_x))
+
+summary(res$pval_LRT_with_rd_x[is.na(res$pval_LRT_without_rd_x)])
+summary(res$pval_LRT_without_rd_x[is.na(res$pval_LRT_with_rd_x)])
+
+ggplot(data = res, mapping = aes(x = -log10(pval_LRT_without_rd_x), 
+                                 y = -log10(pval_LRT_with_rd_x))) +
+  geom_pointdensity() + scale_color_viridis() + 
+  geom_abline(slope = 1, intercept = 0, linewidth=1.5, color = "red")
+
+rm(res)
+```
+
+# Check association results
+
+## Add additional results
+
+The LRT test did not consider directions. Here we only keep those with  AUC > 0.5.
+```{r}
+TCR_rd  = log10(sample_info$abundance)
+
+num_cores = 12
+
+registerDoParallel(cores=num_cores)
+
+date()
+add_res <- foreach(i = 1:nrow(res1), .combine="rbind") %dopar% {
+
+  tcr_i = TCR_mat[rownames(TCR_mat) == res1$TCR[i],]
+  mut_i = mut_mat[rownames(mut_mat) == res1$mut[i],]
+  
+  # r1 = ("TCR_freq", "mut_freq", "overlap", "pval_no_interaction",
+  #       "fisher_pval", "auc", "auc_resid")
+  r1 = rep(NA, 6)
+  
+  r1[1] = sum(tcr_i)
+  r1[2] = sum(mut_i)
+  r1[3] = sum(tcr_i*mut_i)
+  
+  l0 = glm(tcr_i ~ TCR_rd, family = "binomial")
+  l1 = glm(tcr_i ~ TCR_rd + mut_i, family = "binomial")
+  a1 = anova(l0, l1, test = "LRT")
+  r1[4] = a1$`Pr(>Chi)`[2]
+  
+  r1[5] = fisher.test(tcr_i, mut_i)$p.value
+  r1[6] = pROC::auc(response=mut_i, predictor=tcr_i, 
+              quiet=TRUE, direction="<")
+  
+  r1
+}
+date()
+
+add_res = data.table(add_res)
+names(add_res) = c("TCR_freq", "mut_freq", "overlap", "pval_no_interaction", 
+                   "fisher_pval", "auc")
+dim(add_res)
+add_res[1:2,]
+
+res = cbind(res1, add_res)
+
+table(res$auc > 0.5)
+res[res$auc <= 0.5,][1:5,]
+sort(table(res$mut[res$auc <= 0.5]), decreasing = TRUE)[1:20]
+
+res = res[auc > 0.5,]
+
+res$sensitivity = res$overlap/res$mut_freq
+res$precision   = res$overlap/res$TCR_freq
+
+dim(res)
+res[1:5,]
+
+summary(res$precision)
+summary(res$sensitivity)
+```
+
+## Scatter plots of metrics
+
+```{r, fig.width=4, fig.height=3.2}
+table(res$overlap)
+res$overlap_grp = as.character(res$overlap)
+res$overlap_grp[res$overlap > 2] = "3+"
+res$transparency = 0.6
+res[overlap >= 2, transparency:= 0.8]
+table(res$overlap_grp, res$transparency)
+
+
+ggplot(data = res, mapping = aes(x = -log10(pval_LRT), 
+                                 y = -log10(fisher_pval))) +
+  geom_point(aes(alpha = transparency, color = overlap_grp)) + 
+  geom_abline(intercept = 0, slope = 1, linetype="dashed")
+
+ggplot(data = res, mapping = aes(x = -log10(pval_LRT), 
+                                 y = -log10(pval_no_interaction))) +
+  geom_point(aes(alpha = transparency, color = overlap_grp)) + 
+  geom_abline(intercept = 0, slope = 1, linetype="dashed")
+
+ggplot(data = res, mapping = aes(x = -log10(pval_LRT), y = auc)) +
+  geom_point(aes(alpha = transparency, color = overlap_grp))
+
+ggplot(data = res, mapping = aes(x = sensitivity, y = precision)) +
+  geom_point(aes(alpha = transparency, color = overlap_grp)) + 
+  geom_abline(intercept = 0, slope = 1, linetype="dashed")
+
+```
+
+## Check AUCs
+```{r}
+table(res$pval_LRT < 0.1, res$overlap > 1)
+table(res$pval_LRT < 0.1, res$fisher_pval < 0.1)
+table(res$pval_LRT < 0.1, res$pval_no_interaction < 0.1)
+
+res[,transparency := NULL]
+summary(res$auc)
+
+
+ggplot(res, aes(x=auc)) +
+  geom_histogram(color="darkblue", fill="lightblue", 
+                 breaks=seq(0.5,0.72, by=0.01)) + 
+  scale_y_log10()
+
+res2 = res[auc > 0.6,]
+t_gene = table(res2$gene)
+sort(t_gene, decreasing = TRUE)[1:10]
+
+res2[gene == "TP53",]
+
+table(table(res2$mut))
+```
+
+## Check whether some mutations are associated with multiple TCRs
+
+```{r}
+t_mut = table(res$mut)
+summary(as.numeric(t_mut))
+quantile(t_mut, probs=0.99)
+
+mut_freq = sort(t_mut, decreasing = TRUE)
+mut_freq[mut_freq >= quantile(t_mut, probs=0.99)]
+
+TP53_top = names(mut_freq)[grep("TP53", names(mut_freq))[1]]
+TP53_top
+
+res_TP53 = res[mut == TP53_top, c("TCR", "pval_LRT", "TCR_freq", "mut_freq", 
+                       "overlap", "auc")]
+res_TP53
+
+wTCR = which(rownames(TCR_mat) %in% res_TP53$TCR)
+combine_TCR = colSums(TCR_mat[wTCR,])
+TP53 = mut_mat[rownames(mut_mat) == TP53_top,]
+table(combine_TCR, TP53)
+
+TCR_TP53_1 = as.numeric(combine_TCR > 0)
+TCR_TP53_2 = as.numeric(combine_TCR > 1)
+
+pROC::auc(response=TP53, predictor=TCR_TP53_1, 
+              quiet=TRUE, direction="<")
+
+pROC::auc(response=TP53, predictor=TCR_TP53_2, 
+              quiet=TRUE, direction="<")
+```
+
+## Check whether some TCRs are associated with multiple mutations
+```{r}
+t_tcr = table(res$TCR)
+summary(as.numeric(t_tcr))
+quantile(t_tcr, probs=0.99)
+sort(t_tcr[t_tcr >= quantile(t_tcr, probs=0.99)])
+
+res3 = res[TCR == names(t_tcr)[which.max(t_tcr)],]
+dim(res3)
+
+sort(table(res3$gene), decreasing=TRUE)[1:10]
+table(res$overlap)
+table(res3$overlap)
+```
+
+# write out results
+```{r}
+fnm = file.path(result_dir, 
+                sprintf("TCR_%s_mut_asso_rd_interaction_updated.tsv", chain))
+fwrite(res, file=fnm, sep="\t")
+```
+
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

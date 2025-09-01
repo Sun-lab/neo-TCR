@@ -1,0 +1,409 @@
+---
+title: "Check potential confounding effect due to cancer types"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## R library and data input
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(foreach)
+library(doParallel)
+library(qvalue)
+library(pROC)
+library(stringr)
+library(tidyr)
+library(dplyr)
+source("../_utilities.R")
+
+theme_set(theme_classic())
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+num_cores = 12
+registerDoParallel(num_cores)
+
+```
+
+# Load data
+
+```{r}
+TCR_A   = fread(file.path(data_dir, "TCR_alpha_5.tsv"))
+TCR_B   = fread(file.path(data_dir, "TCR_beta_5.tsv"))
+
+mut_data    = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_A)
+dim(TCR_B)
+
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_A)
+head(TCR_B)
+
+head(mut_data)
+head(sample_info)
+table(sample_info$cancer_type)
+
+table(TCR_A$abundance > 1)
+table(TCR_A$abundance > 5)
+
+table(TCR_B$abundance > 1)
+table(TCR_B$abundance > 5)
+
+participants = sample_info$participant
+
+TCR_A_mat = get_TCR_matrix(TCR_A, participants)
+TCR_B_mat = get_TCR_matrix(TCR_B, participants)
+
+mut_mat = get_mut_matrix(mut_data, participants)
+
+dim(TCR_A_mat)
+TCR_A_mat[1:2,1:3]
+
+dim(TCR_B_mat)
+TCR_B_mat[1:2,1:3]
+
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+stopifnot(setequal(participants, colnames(TCR_A_mat)))
+stopifnot(setequal(participants, colnames(TCR_B_mat)))
+stopifnot(setequal(participants, colnames(mut_mat)))
+
+TCR_A_mat = TCR_A_mat[,match(participants, colnames(TCR_A_mat))]
+TCR_B_mat = TCR_B_mat[,match(participants, colnames(TCR_B_mat))]
+
+mut_mat = mut_mat[,match(participants, colnames(mut_mat))]
+
+TCR_A_mat[1:2,1:4]
+TCR_B_mat[1:2,1:4]
+
+mut_mat[1:2,1:4]
+sample_info[1:4,]
+```
+
+## Check T cell proportions
+
+```{r}
+med_T = sample_info[, median(T_cell_prop), by = cancer_type]
+names(med_T)[2] = "median_T_prop"
+med_T = med_T[order(med_T$median_T_prop),]
+dim(med_T)
+med_T[1:2,]
+
+sample_info$cancer_type = factor(sample_info$cancer_type, 
+                                levels = med_T$cancer_type)
+
+ggplot(sample_info, aes(x=cancer_type, y=T_cell_prop)) + 
+  geom_boxplot()  + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Analysis
+
+## Check association between cancer types and TCR
+
+```{r}
+can_type = sample_info$cancer_type
+length(unique(can_type))
+
+get_pvals <- function(dat_mat, can_type){
+  u_can_type = unique(can_type)
+
+  pvals <- foreach(i = 1:nrow(dat_mat), .combine="rbind") %dopar% {
+    yi = dat_mat[i,]
+    gi0 = glm(yi ~ 1, family = "binomial")
+    pv1 = rep(NA, length(u_can_type))
+    
+    for(j in 1:length(u_can_type)){
+      u_can1 = as.numeric(can_type == u_can_type[j])
+      gi1 = glm(yi ~ u_can1, family = "binomial")
+      pv1[j] = anova(gi0, gi1, test="LRT")[["Pr(>Chi)"]][2]
+    }
+    pv1
+  }
+  
+  pvals
+}
+
+
+
+date()
+pval_TCRA = get_pvals(TCR_A_mat, can_type)
+date()
+pval_TCRB = get_pvals(TCR_B_mat, can_type)
+date()
+pval_mut  = get_pvals(mut_mat, can_type)
+date()
+
+rownames(pval_TCRA) = rownames(TCR_A_mat)
+colnames(pval_TCRA) = unique(can_type)
+
+rownames(pval_TCRB) = rownames(TCR_B_mat)
+colnames(pval_TCRB) = unique(can_type)
+
+rownames(pval_mut) = rownames(mut_mat)
+colnames(pval_mut) = unique(can_type)
+
+```
+
+###  Summarize p-values for TCR alpha
+
+```{r}
+dim(pval_TCRA)
+pval_TCRA[1:2,1:3]
+
+df_long <- data.frame(pval_TCRA) %>% 
+  gather(key = "cancer_type", value = "pval")
+
+dim(df_long)
+df_long[1:2,]
+
+ggplot(df_long, aes(x = pval)) +
+  geom_histogram(breaks=seq(0,1,by=0.02)) +
+  facet_wrap(~cancer_type, ncol = 5)
+
+p05  = colMeans(pval_TCRA < 0.05)
+p01  = colMeans(pval_TCRA < 0.01)
+p001 = colMeans(pval_TCRA < 0.001)
+
+df1 = data.frame(cbind(p05, p01, p001))
+df1 = df1[order(df1$p001, decreasing = TRUE),]
+df1
+
+```
+
+###  Summarize p-values for TCR beta
+
+```{r}
+dim(pval_TCRB)
+pval_TCRB[1:2,1:3]
+
+df_long <- data.frame(pval_TCRB) %>% 
+  gather(key = "cancer_type", value = "pval")
+
+dim(df_long)
+df_long[1:2,]
+
+ggplot(df_long, aes(x = pval)) +
+  geom_histogram(breaks=seq(0,1,by=0.02)) +
+  facet_wrap(~cancer_type, ncol = 5)
+
+p05  = colMeans(pval_TCRB < 0.05)
+p01  = colMeans(pval_TCRB < 0.01)
+p001 = colMeans(pval_TCRB < 0.001)
+
+df1 = data.frame(cbind(p05, p01, p001))
+df1 = df1[order(df1$p001, decreasing = TRUE),]
+df1
+
+```
+
+###  Summarize p-values for mut_mat
+
+```{r}
+dim(pval_mut)
+pval_mut[1:2,1:3]
+
+df_long <- data.frame(pval_mut) %>% 
+  gather(key = "cancer_type", value = "pval")
+
+dim(df_long)
+df_long[1:2,]
+
+ggplot(df_long, aes(x = pval)) +
+  geom_histogram(breaks=seq(0,1,by=0.02)) +
+  facet_wrap(~cancer_type, ncol = 5)
+
+p05  = colMeans(pval_mut < 0.05)
+p01  = colMeans(pval_mut < 0.01)
+p001 = colMeans(pval_mut < 0.001)
+
+df1 = data.frame(cbind(p05, p01, p001))
+df1 = df1[order(df1$p001, decreasing = TRUE),]
+df1
+
+```
+
+## Load association results
+
+```{r}
+res_A = fread(file.path(result_dir, 
+                        "TCR_alpha_mut_asso_rd_interaction_updated.tsv"))
+
+res_B = fread(file.path(result_dir, 
+                        "TCR_beta_mut_asso_rd_interaction_updated.tsv"))
+
+dim(res_A)
+res_A[1:2,]
+
+dim(res_B)
+res_B[1:2,]
+
+summary(res_A$pval_LRT)
+summary(res_B$pval_LRT)
+```
+
+## Calculate the p-values given cancer types
+
+```{r}
+can_type = sample_info$cancer_type
+length(unique(can_type))
+
+TCR_rd  = log10(sample_info$abundance)
+
+pval_adj <- function(res, TCR_mat, mut_mat, can_type, TCR_rd){
+  u_can_type = unique(can_type)
+
+  w_TCR = match(res$TCR, rownames(TCR_mat))
+  w_mut = match(res$mut, rownames(mut_mat))
+
+  stopifnot(sum(is.na(w_TCR))==0)
+  stopifnot(sum(is.na(w_mut))==0)
+
+  pvals <- foreach(i = 1:nrow(res), .combine="rbind") %dopar% {
+
+    yi = TCR_mat[w_TCR[i],]
+    xi = mut_mat[w_mut[i],]
+    
+    pv1 = rep(NA, length(u_can_type))
+    
+    for(j in 1:length(u_can_type)){
+      u_can1 = as.numeric(can_type == u_can_type[j])
+      l0 = glm(yi ~ TCR_rd + u_can1, family = "binomial")
+      l1 = glm(yi ~ xi*TCR_rd + u_can1, family = "binomial")
+      pv1[j] = anova(l0, l1, test="LRT")[["Pr(>Chi)"]][2]
+    }
+    pv1
+  }
+  
+  pvals
+}
+```
+
+
+```{r }
+date()
+p_adj_ct_TCRA = pval_adj(res_A, TCR_A_mat, mut_mat, can_type, TCR_rd)
+date()
+p_adj_ct_TCRB = pval_adj(res_B, TCR_B_mat, mut_mat, can_type, TCR_rd)
+date()
+
+colnames(p_adj_ct_TCRA) = unique(can_type)
+colnames(p_adj_ct_TCRB) = unique(can_type)
+
+res_A_ct = cbind(res_A, p_adj_ct_TCRA)
+fwrite(res_A_ct, 
+       file = file.path(result_dir, "TCR_alpha_mut_asso_rd_x_with_ct.tsv"))
+
+res_B_ct = cbind(res_B, p_adj_ct_TCRB)
+fwrite(res_B_ct, 
+       file = file.path(result_dir, "TCR_beta_mut_asso_rd_x_with_ct.tsv"))
+
+```
+
+
+## Summarize p-values for TCR alpha
+
+```{r fig.width = 4, fig.height = 3.2}
+
+res_A_ct = fread(file.path(result_dir, "TCR_alpha_mut_asso_rd_x_with_ct.tsv"))
+res_B_ct = fread(file.path(result_dir, "TCR_beta_mut_asso_rd_x_with_ct.tsv"))
+
+dim(res_A_ct)
+res_A_ct[1:2,]
+
+dim(res_B_ct)
+res_B_ct[1:2,]
+
+w1 = which(names(res_A_ct) == "overlap_grp") + 1
+p_adj_ct_TCRA = res_A_ct[,w1:ncol(res_A_ct)]
+p_max_TCRA = apply(p_adj_ct_TCRA, 1, max)
+res_A_ct$pval_LRT_max_ct = p_max_TCRA
+
+summary(res_A_ct$pval_LRT/res_A_ct$pval_LRT_max_ct)
+res_A_ct[pval_LRT/pval_LRT_max_ct < 0.01, 
+      c("TCR", "mut", "pval_LRT", "pval_LRT_max_ct")]
+
+ct_max_TCRA = apply(p_adj_ct_TCRA, 1, which.max)
+tb1 = table(colnames(p_adj_ct_TCRA)[ct_max_TCRA])
+sort(tb1, decreasing = TRUE)
+
+ggplot(data = res_A_ct, mapping = aes(x = -log10(pval_LRT), 
+                                   y = -log10(pval_LRT_max_ct))) +
+  geom_pointdensity() +
+  scale_color_viridis() + ggtitle("alpha chain") + 
+  geom_abline(slope = 1, intercept = 0, linewidth=1.5, color = "red") + 
+  xlab(expression(-log[10]~"(p-value w/o cancer type)")) +
+  ylab(expression(-log[10]~"(max p-value given cancer type)"))
+
+
+```
+
+## Summarize p-values for TCR beta
+
+```{r fig.width = 4, fig.height = 3.2}
+w1 = which(names(res_B_ct) == "overlap_grp") + 1
+p_adj_ct_TCRB = res_B_ct[,w1:ncol(res_B_ct)]
+
+dim(p_adj_ct_TCRB)
+p_adj_ct_TCRB[1:2,1:3]
+
+p_max_TCRB = apply(p_adj_ct_TCRB, 1, max)
+res_B_ct$pval_LRT_max_ct = p_max_TCRB
+
+summary(res_B_ct$pval_LRT/res_B_ct$pval_LRT_max_ct)
+res_B_ct[pval_LRT/pval_LRT_max_ct < 0.01, 
+      c("TCR", "mut", "pval_LRT", "pval_LRT_max_ct")]
+
+ct_max_TCRB = apply(p_adj_ct_TCRB, 1, which.max)
+tb1 = table(colnames(p_adj_ct_TCRB)[ct_max_TCRB])
+sort(tb1, decreasing = TRUE)
+
+ggplot(data = res_B_ct, mapping = aes(x = -log10(pval_LRT), 
+                                   y = -log10(pval_LRT_max_ct))) +
+  geom_pointdensity() +
+  scale_color_viridis()  + ggtitle("beta chain") + 
+  geom_abline(slope = 1, intercept = 0, linewidth=1.5, color = "red") +
+    xlab(expression(-log[10]~"(p-value w/o cancer type)")) +
+  ylab(expression(-log[10]~"(max p-value given cancer type)"))
+
+
+```
+
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

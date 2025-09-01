@@ -1,0 +1,245 @@
+---
+title: "Get TCRs"
+author: "Bo Yu"
+date: "2024-02-26"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/fh/scratch/delete90/sun_w/yub/tcr/tracerx/rna-seq/')
+```
+
+```{r}
+if (!dir.exists('results')) dir.create('results')
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+```
+
+## Load meta data
+
+```{r Load meta data}
+meta = as_tibble(data.table::fread('sample_file.csv'))
+
+meta$true_file_name = sapply(strsplit(meta$file_name, '_'), function(x) paste(x[5:length(x)], collapse = '_'))
+
+meta$analysis_id = sapply(strsplit(meta$true_file_name, '\\.'), function(x) x[1])
+```
+
+```{r Check meta data}
+# Patients
+patients = sort(unique(sapply(strsplit(meta$sample_alias, '_'), head, n = 1)))
+
+head(patients)
+
+tail(patients)
+
+length(patients)
+
+
+# Data collection type
+collection_types = sapply(strsplit(meta$sample_alias, '_'), function(x) x[2])
+
+table(collection_types)
+```
+
+```{r}
+# Tumor symbols
+tumor_symbols = sapply(strsplit(meta$sample_alias, '_|-'), function(x) x[3])
+
+table(tumor_symbols)
+# T: tumor
+# LN: lymph node
+# N: normal sample
+
+xtabs(~ collection_types + tumor_symbols)
+```
+
+```{r}
+# Exclude normal samples & lymph nodes
+meta = meta[tumor_symbols %in% c('T1', 'T2'), ]
+
+tumor_symbols = sapply(strsplit(meta$sample_alias, '_|-'), function(x) x[3])
+```
+
+```{r}
+# Try to match tumors between somatic mutation data & RNA-seq data
+
+# For somatic mutation data
+mut_df = readRDS('../somatic_mutation/mut_df.rds')
+
+mut_samples_with_multiple_tumors = sort(unique(grep('_', mut_df$tumour_id, value = T)))
+
+mut_samples_with_multiple_tumors
+
+# For RNA-seq data
+rnaseq_samples_with_T2 = sort(unique(meta$sample_alias[tumor_symbols == 'T2']))
+
+rnaseq_samples_with_T2
+
+# It seems they collected new tumors after DNA-seq
+```
+
+```{r}
+# Can't match at tumor level. Aggregate mutations & TCRs to patient level
+meta$tumor = sapply(strsplit(meta$sample_alias, '_'), head, n = 1) 
+
+# Number of tumors (i.e. patients)
+length(unique(meta$tumor))
+```
+
+```{r}
+# Region symbols
+region_symbols = sapply(strsplit(meta$sample_alias, '-'), function(x) x[2])
+
+table(region_symbols)
+```
+
+## Load TRUST4 results
+
+```{r Load TRUST4 results}
+get_trust4_results <- function(file) {
+  raw = readr::read_tsv(file, num_threads = 1)
+  
+  chain = substr(raw$V, 1, 3)
+  raw = raw[chain %in% c('TRA', 'TRB'), ]
+  
+  data = tibble(cdr3_aa = raw$CDR3aa, cdr3_nt = raw$CDR3nt, chain = substr(raw$V, 3, 3), count = raw$`#count`, 
+                V = raw$V, D = raw$D, J = raw$J, C = raw$C)
+  
+  return(data)
+}
+
+# Load 
+tumors = sort(unique(meta$tumor))
+
+tcr = Reduce(rbind, parallel::mcmapply(function(tumor) {
+  folders = meta$analysis_id[meta$tumor == tumor]
+  
+  new = Reduce(rbind, lapply(folders, function(folder) 
+    bind_cols(analysis_id = folder, get_trust4_results(paste0('trust4_results/', folder, '/res_report.tsv')))))
+  
+  new = bind_cols(tumor = tumor, new)
+  
+  return(new)
+}, tumors, SIMPLIFY = F, mc.cores = 36))
+```
+
+## QC
+
+```{r}
+## AA sequences
+table(unlist(strsplit(tcr$cdr3_aa, '')))
+
+# Remove those with ? & out_of_frame
+tcr = tcr %>% filter(cdr3_aa != 'out_of_frame', !grepl('\\?|_', cdr3_aa))
+
+table(unlist(strsplit(tcr$cdr3_aa, '')))
+```
+
+## Number of TCRs a tumor has
+
+```{r}
+ntcr = tcr %>% group_by(tumor, chain) %>% summarise(ntcr = sum(count), .groups = 'drop')
+
+ggplot(ntcr, aes(ntcr, fill = chain)) +
+  geom_histogram(position = position_stack()) +
+  labs(color = '', x = 'Number of TCRs a tumor has', fill = '') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+
+# Top tumors
+ntcr %>% filter(ntcr > 3000)
+```
+
+## Number of unique TCRs a tumor has
+
+```{r}
+n_unique_tcr = tcr %>% group_by(tumor, chain) %>% summarise(ntcr = length(unique(cdr3_aa)), .groups = 'drop')
+
+ggplot(n_unique_tcr, aes(ntcr, fill = chain)) +
+  geom_histogram(position = position_stack()) +
+  labs(color = '', x = 'Number of unique TCRs a tumor has') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+
+# Top tumors
+n_unique_tcr %>% filter(ntcr > 500)
+```
+
+## Total counts of a TCR
+
+```{r}
+tcr_freq = tcr %>% group_by(cdr3_aa, chain) %>% summarise(freq = sum(count), .groups = 'drop')
+
+ggplot(tcr_freq, aes(freq, fill = chain)) +
+  geom_histogram(aes(y = log10(after_stat(count) + 1)), position = position_stack()) +
+  labs(color = '', x = 'Total counts of a TCR', y = 'log10(count + 1)') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+
+# Top TCRs
+tcr_freq %>% filter(freq > 900)
+```
+
+## Number of tumors where a TCR appears
+
+```{r}
+ntumor_per_tcr = tcr %>% group_by(cdr3_aa, chain) %>% summarise(ntumor = length(unique(tumor)), .groups = 'drop')
+
+ggplot(ntumor_per_tcr, aes(ntumor, fill = chain)) +
+  geom_histogram(aes(y = log10(after_stat(count) + 1)), position = position_stack()) +
+  labs(color = '', x = 'Number of tumors where a TCR appears', y = 'log10(count + 1)') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+
+# Top TCRs
+ntumor_per_tcr %>% filter(ntumor > 20)
+```
+
+## Build TCR matrix
+
+```{r TCRs}
+# Distinguish same AA sequences from different chains
+tcr$tcr_id = paste0(tcr$cdr3_aa, '_', tcr$chain)
+
+tcrs = sort(unique(tcr$tcr_id))
+
+head(tcrs)
+
+tail(tcrs)
+
+length(tcrs)
+```
+
+```{r Build TCR matrix}
+mat = matrix(NA, nrow = length(tumors), ncol = length(tcrs), dimnames = list(tumors, tcrs))
+
+for (tumor in tumors) {
+  curr = tcr[tcr$tumor == tumor, ]
+  
+  mat[tumor, ] = parallel::mcmapply(function(id) {
+    if (!(id %in% curr$tcr_id)) return(0)
+    curr %>% filter(tcr_id == id) %>% pull(count) %>% sum()
+  }, tcrs, SIMPLIFY = T, mc.cores = 36)
+}
+```
+
+## Save
+
+```{r Save}
+saveRDS(meta, file = 'results/meta.rds')
+saveRDS(tcr, file = 'results/tcr_df.rds')
+saveRDS(mat, file = 'results/tcr_mat.rds')
+```
+
+```{r}
+sessionInfo()
+```

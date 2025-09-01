@@ -1,0 +1,637 @@
+---
+title: "Whether TCRs associated with somatic mutation tend to have cancer reactive signatures"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(tidyr)
+library(dplyr)
+
+library(stringr)
+library(pROC)
+library(ROCR)
+library(ggrepel)
+library(scales)
+
+theme_set(theme_classic())
+
+result_dir = "~/research/data/TCR/TCGA/_results"
+# cancer reactive T cell data
+CAT_dir  = "~/research/CAT/data"
+```
+
+# Read in data
+
+## Read in cell information of Zheng et al. data
+```{r message = FALSE, warning=FALSE}
+cd8 = fread(file.path(CAT_dir, "CD8_with_NN_predictions.tsv.gz"))
+cd4 = fread(file.path(CAT_dir, "CD4_with_NN_predictions.tsv.gz"))
+
+dim(cd8)
+cd8[1:2,]
+
+dim(cd4)
+cd4[1:2,]
+
+table(cd4$label, cd4$`True Label`)
+table(cd8$label, cd8$`True Label`)
+
+table(cd8$label, cd8$Prediction > 0.5)
+table(cd4$label, cd4$Prediction > 0.5)
+
+```
+
+
+# Load TCR-somatic mutation association results
+
+```{r}
+res_A = fread(file.path(result_dir, "TCR_alpha_mut_asso_rd_x_with_ct.tsv"))
+dim(res_A)
+res_A[1:2,]
+
+res_B = fread(file.path(result_dir, "TCR_beta_mut_asso_rd_x_with_ct.tsv"))
+dim(res_B)
+res_B[1:2,]
+
+summary(res_A$pval_LRT)
+summary(res_B$pval_LRT)
+
+wA1 = which(names(res_A) == "overlap_grp") + 1
+wB1 = which(names(res_B) == "overlap_grp") + 1
+
+p_ct_max_A = apply(res_A[,wA1:ncol(res_A)], 1, max)
+p_ct_max_B = apply(res_B[,wB1:ncol(res_B)], 1, max)
+
+res_A = res_A[which(p_ct_max_A <= 10*res_A$pval_LRT),]
+dim(res_A)
+
+res_B = res_B[which(p_ct_max_B <= 10*res_B$pval_LRT),]
+dim(res_B)
+
+table(res_A$pval_LRT <= 0.1)
+table(res_B$pval_LRT <= 0.1)
+
+res_A = res_A[pval_LRT <= 0.1,]
+res_B = res_B[pval_LRT <= 0.1,]
+dim(res_A)
+dim(res_B)
+```
+
+# Check the postive and negative cancer reactive TCR scores
+
+## CD8+ T cells
+
+```{r fig.width=3, fig.height=3}
+table(cd8$label == cd8$`True Label`)
+cd8[, label := factor(label)]
+
+ggplot(cd8, aes(x = label, y = Prediction)) +
+  geom_violin(trim = FALSE, fill = "lightblue", color = "black") +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  labs(
+    x = "Label",
+    y = "Prediction",
+    title = "Prediction vs Label"
+  ) +
+  theme_minimal(base_size = 14)
+
+table(cd8$label, cd8$clone_number_total > 2)
+
+table(cd8$clone_n_patient)
+table(cd8$label, cd8$clone_n_patient)
+
+```
+
+### The number of clones vs. cancer reactive status
+
+```{r fig.width=6, fig.height=4}
+
+# Build working DT
+dt <- data.table(
+  label = cd8$label,
+  prediction = cd8$Prediction,
+  clone_number_total = cd8$clone_number_total
+)
+
+table(dt$label, dt$prediction > 0.5)
+table(dt$label, dt$prediction > 0.8)
+table(dt$label, dt$prediction > 0.95)
+table(dt$label, dt$prediction > 0.99)
+
+# Define new_label
+dt[, new_label := fifelse(as.character(label) == "1" & prediction > 0.5, "1", "0")]
+
+# Keep only positive clone_number_total for log10
+dt <- dt[clone_number_total > 0]
+dt[, log_clone_total := log10(clone_number_total)]
+
+# Combine into one long table with 4 groups
+dt_label <- dt[, .(group = paste0("Label: ", as.character(label)),
+                   log_clone_total)]
+dt_newlabel <- dt[, .(group = paste0("New label: ", new_label),
+                      log_clone_total)]
+
+plot_dt <- rbind(dt_label, dt_newlabel)
+plot_dt[, group := factor(group,
+                          levels = c("Label: 0", "Label: 1",
+                                     "New label: 0", "New label: 1"))]
+
+# Draw density curves
+ggplot(plot_dt, aes(x = log_clone_total, color = group, fill = group)) +
+  geom_density(alpha = 0.3) +
+  labs(
+    x = expression(log[10](clone_number_total)),
+    y = "Density",
+    color = "Group",
+    fill = "Group"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+## The number of clones vs. cancer reactive status
+
+Barplot
+
+```{r fig.width=6, fig.height=3}
+dt <- data.table(
+  clone = cd8$clone, 
+  label = cd8$label,
+  prediction = cd8$Prediction,
+  clone_number_total = cd8$clone_number_total
+)
+
+dim(dt)
+
+dt[, new_label := fifelse(as.character(label) == "1" & prediction > 0.5, "1", "0")]
+
+tapply(dt$clone_number_total, dt$new_label, summary)
+
+bins <- c("3–5", "6–10", "11–20", "21–50", "51–100", "> 100")
+dt_f <- dt[clone_number_total >= 3L][
+  , cn_tot_cat := cut(
+      clone_number_total,
+      breaks = c(3, 6, 11, 21, 51, 101, Inf),  
+      right  = FALSE,
+      labels = bins
+    )
+][, cn_tot_cat := factor(cn_tot_cat, levels = bins)]
+
+# 2) Count per (new_label, bin), fill missing combos with 0
+grid <- CJ(new_label = unique(dt_f$new_label), cn_tot_cat = factor(bins, levels = bins))
+dt_counts <- merge(grid, dt_f[, .N, by = .(new_label, cn_tot_cat)], all.x = TRUE)
+dt_counts[is.na(N), N := 0L]
+
+dt_props <- copy(dt_counts)[, prop := N / sum(N), by = new_label]
+
+p_props <- ggplot(dt_props, aes(x = cn_tot_cat, y = prop, fill = factor(new_label))) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.65) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(x = "Number of clones", y = "Proportion", fill = "Cancer reactive") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_props
+```
+
+### Add TCR association results
+
+```{r}
+names(cd8)
+names(cd8)[1] = "cell_study_id"
+
+cd8 = cd8[,c(1, 3:16,33,34,37:42, 46, 47)]
+dim(cd8)
+
+cd8[,TCR_asso_mutation := "neither"]
+
+table(cd8$TRA_cdr3 %in% res_A$TCR, cd8$TRB_cdr3 %in% res_B$TCR)
+
+cd8[TRA_cdr3 %in% res_A$TCR & TRB_cdr3 %in% res_B$TCR, 
+    TCR_asso_mutation:="both"]
+
+cd8[TRA_cdr3 %in% res_A$TCR & (! TRB_cdr3 %in% res_B$TCR), 
+    TCR_asso_mutation:="alpha"]
+
+cd8[(! TRA_cdr3 %in% res_A$TCR) & TRB_cdr3 %in% res_B$TCR, 
+    TCR_asso_mutation:="beta"]
+
+tt1 = table(cd8$TCR_asso_mutation, cd8$label == 1 & cd8$Prediction > 0.5)
+
+```
+
+### Plot CR proportions
+
+```{r fig.width=3, fig.height=2.5}
+df1 = data.frame(tt1)
+names(df1)[1:2] = c("TCR", "CR")
+
+df_prop <- df1 %>%
+  group_by(TCR) %>%
+  mutate(total = sum(Freq)) %>%
+  mutate(prop_TRUE = Freq / total) 
+
+df_prop$TCR <- factor(df_prop$TCR,
+                      levels = c("neither", "alpha", "beta", "both"))
+df_prop
+
+ggplot(df_prop[df_prop$CR == TRUE,], aes(x = TCR, y = prop_TRUE, fill = TCR)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Matching of TCR chains",
+       y = "Proportion of CR") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+# Row-wise summation (log10 scale)
+df_sum <- df1 %>%
+  group_by(TCR) %>%
+  summarise(total = sum(Freq), .groups = "drop")
+
+df_sum$TCR <- factor(df_sum$TCR,
+                     levels = c("neither", "alpha", "beta", "both"))
+
+ggplot(df_sum, aes(x = TCR, y = total, fill = TCR)) +
+  geom_col() +
+  geom_text(aes(label = scales::comma(total)),
+            vjust = -0.3, size = 4) +
+  scale_y_log10(expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "Matching of TCR chains",
+       y = "Total Count (log10)") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+```
+
+```{r fig.width=3, fig.height=3}
+dt <- as.data.table(cd8)
+
+# Treat NA as a category
+dt[, TCR_asso_mutation_cat := as.character(TCR_asso_mutation)]
+dt[is.na(TCR_asso_mutation_cat), TCR_asso_mutation_cat := "neither"]
+dt[, TCR_asso_mutation_cat := factor(TCR_asso_mutation_cat,
+                                     levels = c("neither", "alpha", "beta", "both"))]
+
+# Define comparisons: any group vs "both"
+groups <- setdiff(levels(dt$TCR_asso_mutation_cat), "both")
+comparisons <- lapply(groups, function(g) c(g, "both"))
+
+y_max <- max(dt$pos_score_CD8, na.rm = TRUE)
+
+# Boxplot with p-values
+ggplot(dt, aes(x = TCR_asso_mutation_cat, y = pos_score_CD8, fill = TCR_asso_mutation_cat)) +
+  geom_boxplot(outlier.shape = 16, outlier.size = 1.5) +
+  stat_compare_means(comparisons = comparisons, method = "wilcox.test") +
+  labs(
+    x = "Matching of TCR chains",
+    y = "CD8+ T pos. CR score"
+  ) +
+  coord_cartesian(ylim = c(min(dt$pos_score_CD8, na.rm = TRUE), y_max + 2.5)) + 
+  theme_minimal(base_size = 14) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+y_max <- max(dt$neg_score_CD8, na.rm = TRUE)
+
+ggplot(dt, aes(x = TCR_asso_mutation_cat, y = neg_score_CD8, fill = TCR_asso_mutation_cat)) +
+  geom_boxplot(outlier.shape = 16, outlier.size = 1.5) +
+  stat_compare_means(comparisons = comparisons, method = "wilcox.test") +
+  labs(
+    x = "Matching of TCR chains",
+    y = "CD8+ T neg. CR score"
+  ) +
+  coord_cartesian(ylim = c(min(dt$neg_score_CD8, na.rm = TRUE), y_max + 2.5)) + 
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+```
+
+## check relation with total number of clones
+
+```{r fig.width=4.5, fig.height=3}
+dt <- as.data.table(cd8)
+
+summary(dt$clone_number_total)
+# 1) Bin clone_number_total into 3–5, 6–10, 11–20, >20
+dt[, cn_tot_cat := fcase(
+  clone_number_total >= 3  & clone_number_total <= 5,   "3-5",
+  clone_number_total >= 6  & clone_number_total <= 10,  "6-10",
+  clone_number_total >= 11 & clone_number_total <= 20,  "11-20",
+  clone_number_total >= 21 & clone_number_total <= 50,  "21-50",
+  clone_number_total > 50,                              ">50",
+  default = NA_character_
+)]
+
+# Keep only defined bins
+dt <- dt[!is.na(cn_tot_cat)]
+
+# 2) TCR_cat: include NA as a category
+dt[, TCR_cat := as.character(TCR_asso_mutation)]
+dt[is.na(TCR_cat), TCR_cat := "neither"]
+
+# Set factor levels for consistent ordering
+tcr_levels <- c("alpha", "beta", "both", "neither")
+dt[, TCR_cat := factor(TCR_cat, levels = tcr_levels[tcr_levels %in% unique(TCR_cat)])]
+cn_levels <- c("3-5", "6-10", "11-20", "21-50", ">50")
+dt[, cn_tot_cat := factor(cn_tot_cat, levels = cn_levels)]
+
+# 3) Count and compute relative frequency within each TCR_cat
+freq <- dt[, .N, by = .(TCR_cat, cn_tot_cat)][
+  , prop := N / sum(N), by = TCR_cat]
+
+# Ensure all combinations exist (so missing ones are 0%)
+all_combos <- CJ(TCR_cat = levels(dt$TCR_cat), cn_tot_cat = cn_levels, unique = TRUE)
+freq <- merge(all_combos, freq, by = c("TCR_cat", "cn_tot_cat"), all.x = TRUE)
+freq[is.na(N), `:=`(N = 0, prop = 0)]
+
+freq[, cn_tot_cat := factor(cn_tot_cat, levels = cn_levels)]
+
+# 4) Side-by-side bar plot
+ggplot(freq, aes(x = TCR_cat, y = prop, fill = cn_tot_cat)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    x = "TCR-mutation association",
+    y = "Relative freq",
+    fill = "# of clones",
+    title = "CD8+ T"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+## CD4+ T cells
+
+
+```{r}
+table(cd4$TRA_cdr3 %in% res_A$TCR, cd4$TRB_cdr3 %in% res_B$TCR)
+
+names(cd4)
+names(cd4)[1] = "cell_study_id"
+
+cd4 = cd4[,c(1, 3:16,32,33,36:41, 45, 46)]
+dim(cd4)
+cd4[1:2,]
+
+cd4[,TCR_asso_mutation := "neither"]
+
+cd4[TRA_cdr3 %in% res_A$TCR & TRB_cdr3 %in% res_B$TCR, 
+    TCR_asso_mutation:="both"]
+
+cd4[TRA_cdr3 %in% res_A$TCR & (! TRB_cdr3 %in% res_B$TCR), 
+    TCR_asso_mutation:="alpha"]
+
+cd4[(! TRA_cdr3 %in% res_A$TCR) & TRB_cdr3 %in% res_B$TCR, 
+    TCR_asso_mutation:="beta"]
+
+t1 = table(cd4$TCR_asso_mutation)
+t1
+```
+
+
+### Plot the CR proportions
+
+```{r fig.width=3, fig.height=2.5}
+tt1 = table(cd4$TCR_asso_mutation, cd4$label == 1 & cd4$Prediction > 0.5)
+df1 = data.frame(tt1)
+names(df1)[1:2] = c("TCR", "CR")
+
+df_prop <- df1 %>%
+  group_by(TCR) %>%
+  mutate(total = sum(Freq)) %>%
+  mutate(prop_TRUE = Freq / total) 
+
+df_prop$TCR <- factor(df_prop$TCR,
+                      levels = c("neither", "alpha", "beta", "both"))
+
+df_prop
+
+ggplot(df_prop[df_prop$CR == TRUE,], aes(x = TCR, y = prop_TRUE, fill = TCR)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Matching of TCR chains",
+       y = "Proportion of CR") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+# Row-wise summation (log10 scale)
+
+df_sum <- df1 %>%
+  group_by(TCR) %>%
+  summarise(total = sum(Freq), .groups = "drop")
+
+df_sum$TCR <- factor(df_sum$TCR,
+                     levels = c("neither", "alpha", "beta", "both"))
+
+ggplot(df_sum, aes(x = TCR, y = total, fill = TCR)) +
+  geom_col() +
+  geom_text(aes(label = scales::comma(total)),
+            vjust = -0.3, size = 4) +
+  scale_y_log10(expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "Matching of TCR chains",
+       y = "Total Count (log10)") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+```
+
+
+## The number of clones vs. cancer reactive status
+
+Barplot
+
+```{r fig.width=6, fig.height=3}
+dt <- data.table(
+  clone = cd4$clone, 
+  label = cd4$label,
+  prediction = cd4$Prediction,
+  clone_number_total = cd4$clone_number_total
+)
+
+dim(dt)
+
+dt[, new_label := fifelse(as.character(label) == "1" & prediction > 0.5, "1", "0")]
+
+tapply(dt$clone_number_total, dt$new_label, summary)
+
+bins <- c("3–5", "6–10", "11–20", "21–50", "51–100", "> 100")
+dt_f <- dt[clone_number_total >= 3L][
+  , cn_tot_cat := cut(
+      clone_number_total,
+      breaks = c(3, 6, 11, 21, 51, 101, Inf),  
+      right  = FALSE,
+      labels = bins
+    )
+][, cn_tot_cat := factor(cn_tot_cat, levels = bins)]
+
+# 2) Count per (new_label, bin), fill missing combos with 0
+grid <- CJ(new_label = unique(dt_f$new_label), cn_tot_cat = factor(bins, levels = bins))
+dt_counts <- merge(grid, dt_f[, .N, by = .(new_label, cn_tot_cat)], all.x = TRUE)
+dt_counts[is.na(N), N := 0L]
+
+dt_props <- copy(dt_counts)[, prop := N / sum(N), by = new_label]
+
+p_props <- ggplot(dt_props, aes(x = cn_tot_cat, y = prop, fill = factor(new_label))) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.65) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(x = "Number of clones", y = "Proportion", fill = "Cancer reactive") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_props
+```
+
+```{r fig.width=3, fig.height=3}
+dt <- as.data.table(cd4)
+
+# Treat NA as a category
+dt[, TCR_asso_mutation_cat := as.character(TCR_asso_mutation)]
+dt[is.na(TCR_asso_mutation_cat), TCR_asso_mutation_cat := "neither"]
+dt[, TCR_asso_mutation_cat := factor(TCR_asso_mutation_cat,
+                                     levels = c("neither", "alpha", "beta", "both"))]
+
+# Define comparisons: any group vs "both"
+groups <- setdiff(levels(dt$TCR_asso_mutation_cat), "both")
+comparisons <- lapply(groups, function(g) c(g, "both"))
+
+y_max <- max(dt$pos_score_CD4, na.rm = TRUE)
+
+# Boxplot with p-values
+ggplot(dt, aes(x = TCR_asso_mutation_cat, y = pos_score_CD4, fill = TCR_asso_mutation_cat)) +
+  geom_boxplot(outlier.shape = 16, outlier.size = 1.5) +
+  stat_compare_means(comparisons = comparisons, method = "wilcox.test") +
+  labs(
+    x = "Matching of TCR chains",
+    y = "CD4+ T pos. CR score"
+  ) +
+  coord_cartesian(ylim = c(min(dt$pos_score_CD4, na.rm = TRUE), y_max + 2.5)) + 
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+  
+y_max <- max(dt$neg_score_CD4, na.rm = TRUE)
+
+# Boxplot with p-values
+ggplot(dt, aes(x = TCR_asso_mutation_cat, y = neg_score_CD4, fill = TCR_asso_mutation_cat)) +
+  geom_boxplot(outlier.shape = 16, outlier.size = 1.5) +
+  stat_compare_means(comparisons = comparisons, method = "wilcox.test") +
+  labs(
+    x = "Matching of TCR chains",
+    y = "CD4+ T neg. CR score"
+  ) +
+  coord_cartesian(ylim = c(min(dt$neg_score_CD4, na.rm = TRUE), y_max + 2.5)) + 
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+```
+
+## check relation with total number of clones
+
+```{r fig.width=4.5, fig.height=3}
+dt <- as.data.table(cd4)
+
+summary(dt$clone_number_total)
+# 1) Bin clone_number_total into 3–5, 6–10, 11–20, >20
+dt[, cn_tot_cat := fcase(
+  clone_number_total >= 3  & clone_number_total <= 5,   "3-5",
+  clone_number_total >= 6  & clone_number_total <= 10,  "6-10",
+  clone_number_total >= 11 & clone_number_total <= 20,  "11-20",
+  clone_number_total >= 21 & clone_number_total <= 50,  "21-50",
+  clone_number_total > 50,                              ">50",
+  default = NA_character_
+)]
+
+# Keep only defined bins
+dt <- dt[!is.na(cn_tot_cat)]
+
+# 2) TCR_cat: include NA as a category
+dt[, TCR_cat := as.character(TCR_asso_mutation)]
+dt[is.na(TCR_cat), TCR_cat := "neither"]
+
+# Set factor levels for consistent ordering
+tcr_levels <- c("alpha", "beta", "both", "neither")
+dt[, TCR_cat := factor(TCR_cat, levels = tcr_levels[tcr_levels %in% unique(TCR_cat)])]
+cn_levels <- c("3-5", "6-10", "11-20", "21-50", ">50")
+dt[, cn_tot_cat := factor(cn_tot_cat, levels = cn_levels)]
+
+# 3) Count and compute relative frequency within each TCR_cat
+freq <- dt[, .N, by = .(TCR_cat, cn_tot_cat)][
+  , prop := N / sum(N), by = TCR_cat]
+
+# Ensure all combinations exist (so missing ones are 0%)
+all_combos <- CJ(TCR_cat = levels(dt$TCR_cat), cn_tot_cat = cn_levels, unique = TRUE)
+freq <- merge(all_combos, freq, by = c("TCR_cat", "cn_tot_cat"), all.x = TRUE)
+freq[is.na(N), `:=`(N = 0, prop = 0)]
+
+freq[, cn_tot_cat := factor(cn_tot_cat, levels = cn_levels)]
+
+# 4) Side-by-side bar plot
+ggplot(freq, aes(x = TCR_cat, y = prop, fill = cn_tot_cat)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    x = "TCR-mutation association",
+    y = "Relative freq",
+    fill = "# of clones",
+    title = "CD4+ T"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+
+## Write out results
+
+```{r}
+
+t1 = table(cd8$TCR_asso_mutation)
+t1
+
+t1/nrow(cd8)
+
+t2 = table(cd4$TCR_asso_mutation)
+t2
+
+t2/nrow(cd4)
+
+cd4 = cd4[label == 1 & Prediction > 0.5,]
+cd8 = cd8[label == 1 & Prediction > 0.5,]
+
+dim(cd4)
+dim(cd8)
+
+cd4[1:2,]
+cd8[1:2,]
+
+fwrite(cd8, file = file.path(CAT_dir, "CD8_CAT_final.tsv"), sep = "\t")
+fwrite(cd4, file = file.path(CAT_dir, "CD4_CAT_final.tsv"), sep = "\t")
+
+```
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

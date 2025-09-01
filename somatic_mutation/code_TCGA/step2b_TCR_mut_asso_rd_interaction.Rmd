@@ -1,0 +1,212 @@
+---
+title: "Assess the assocaition between TCR and somatic mutations"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+params:
+  chain: beta
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## Parameters
+```{r}
+chain = params$chain
+
+cat("chain:", chain, "\n")
+```
+
+
+## R library and data input
+
+```{r}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(foreach)
+library(doParallel)
+library(qvalue)
+source("_utilities.R")
+
+theme_set(theme_classic())
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+```
+
+
+# Load data
+
+## Read in data
+
+These TCR data have already been aggregated at participant level and a TCR is defined by the aaSeq.  
+```{r}
+TCR_data   = fread(file.path(data_dir, sprintf("TCR_%s_5.tsv", chain)))
+mut_data   = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data)
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data)
+head(mut_data)
+head(sample_info)
+
+participants = sample_info$participant
+
+TCR_mat = get_TCR_matrix(TCR_data, participants)
+mut_mat = get_mut_matrix(mut_data, participants)
+
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+stopifnot(setequal(participants, colnames(TCR_mat)))
+stopifnot(setequal(participants, colnames(mut_mat)))
+
+TCR_mat = TCR_mat[,match(participants, colnames(TCR_mat))]
+mut_mat = mut_mat[,match(participants, colnames(mut_mat))]
+```
+
+
+## Check mutation frequency and TCR frequency
+
+```{r}
+n_per_mut = rowSums(mut_mat)
+summary(n_per_mut)
+table(n_per_mut >= 5)
+
+mut_mat = mut_mat[which(n_per_mut >= 5),]
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+n_per_TCR = rowSums(TCR_mat)
+summary(n_per_TCR)
+table(n_per_TCR >= 5)
+
+TCR_mat = TCR_mat[which(n_per_TCR >= 5),]
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+```
+
+## Check associations between TCRs and mutations
+
+```{r}
+num_cores = 10
+
+registerDoParallel(cores=num_cores)
+
+TCR_rd  = sample_info$abundance
+TCR_rd2 = colSums(TCR_mat)
+summary(TCR_rd)
+summary(TCR_rd2)
+cor(TCR_rd, TCR_rd2, method = "spearman")
+
+table(TCR_rd == 1)
+table(TCR_rd == 2)
+table(TCR_rd > 5)
+table(TCR_rd > 10)
+
+table(TCR_rd == 2)
+
+table(TCR_rd2 > 0)
+
+TCR_rd = log10(TCR_rd)
+hist(TCR_rd, breaks = 50)
+
+logistic_reg <- function(y, x, TCR_rd, l0){
+    l1 = glm(y ~ x * TCR_rd, family = "binomial")
+    lrt = anova(l0, l1, test = "LRT")
+    
+    lrt$`Pr(>Chi)`[2]
+}
+
+n_TCRs = nrow(TCR_mat)
+n_muts = nrow(mut_mat)
+
+date()
+results <- foreach(i = 1:n_TCRs, .combine="rbind") %dopar% {
+  y = TCR_mat[i,]
+  l0 = glm(y ~ TCR_rd, family = "binomial")
+
+  pvals <- sapply(1:n_muts, function(j) {
+    logistic_reg(y, mut_mat[j,], TCR_rd=TCR_rd, l0=l0)
+  })
+  df1 = data.frame(TCR = rep(rownames(TCR_mat)[i], n_muts), 
+                   mut = rownames(mut_mat), 
+                   pval_LRT = pvals)
+  df1
+}
+date()
+
+rd_pval <- foreach(i = 1:n_TCRs, .combine="rbind") %dopar% {
+  y = TCR_mat[i,]
+  l0 = glm(y ~ 1, family = "binomial")
+  l1 = glm(y ~ TCR_rd, family = "binomial")
+  anova(l0, l1, test = "LRT")$`Pr(>Chi)`[2]
+}
+
+summary(rd_pval)
+hist(rd_pval, main="", xlab="TCR-rd p-value by LRT", 
+     breaks=seq(0,1,by=0.01))
+
+dim(results)
+head(results)
+
+summary(results$pval_LRT)
+
+hist(results$pval_LRT, main="", xlab="TCR-mutation p-value by LRT", 
+     breaks=seq(0,1,by=0.01))
+
+table(results$pval_LRT < 0.1)
+nrow(results)*0.1
+
+table(results$pval_LRT < 0.01)
+nrow(results)*0.01
+
+table(results$pval_LRT < 0.001)
+nrow(results)*0.001
+
+table(results$pval_LRT < 1e-4)
+nrow(results)*1e-4
+
+results = results[results$pval_LRT <= 0.50,]
+dim(results)
+summary(results$pval_LRT)
+
+results = results[order(results$pval_LRT),]
+results[1:10,]
+
+fnm = file.path(data_dir, 
+                sprintf("../_results/TCR_%s_mut_asso_rd_interaction.tsv", chain))
+fwrite(results, file=fnm, sep="\t")
+```
+
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

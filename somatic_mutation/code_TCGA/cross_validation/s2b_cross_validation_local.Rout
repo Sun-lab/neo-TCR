@@ -1,0 +1,289 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: aarch64-apple-darwin20 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> 
+> lib_path = "/fh/fast/sun_w/Rlibs"
+> data_dir = "/fh/fast/sun_w/research/data/TCR/TCGA/_processed_data"
+> res_dir  = "/fh/fast/sun_w/research/data/TCR/TCGA/_results/_cross_validation"
+> at_cluster = TRUE
+> 
+> if(!file.exists(lib_path)){
++   lib_path = .libPaths()
++   data_dir = "~/research/data/TCR/TCGA/_processed_data"
++   res_dir  = "~/research/data/TCR/TCGA/_results/_cross_validation"
++   at_cluster = FALSE
++ }
+> 
+> lib_path
+[1] "/Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library"
+> 
+> library(data.table, lib.loc=lib_path)
+> library(foreach, lib.loc=lib_path)
+> library(doParallel, lib.loc=lib_path)
+Loading required package: iterators
+Loading required package: parallel
+> library(dplyr, lib.loc=lib_path)
+
+Attaching package: ‘dplyr’
+
+The following objects are masked from ‘package:data.table’:
+
+    between, first, last
+
+The following objects are masked from ‘package:stats’:
+
+    filter, lag
+
+The following objects are masked from ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+> library(reshape2, lib.loc=lib_path)
+
+Attaching package: ‘reshape2’
+
+The following objects are masked from ‘package:data.table’:
+
+    dcast, melt
+
+> 
+> args=(commandArgs(TRUE))
+> args
+character(0)
+> 
+> if (length(args) != 2) {
++   message("one argument is expected, use 'LIHC' as default.\n")
++   cancer_type = "LIHC"
++   chain = "alpha"
++ }else{
++   for(i in 1:2){
++     eval(parse(text=args[[i]]))
++   }
++ }
+one argument is expected, use 'LIHC' as default.
+
+> 
+> cancer_type
+[1] "LIHC"
+> chain
+[1] "alpha"
+> 
+> # ------------------------------------------------------------------
+> # utility functions
+> # ------------------------------------------------------------------
+> 
+> ## Functions to generate data matrices
+> 
+> get_TCR_matrix <- function(TCR_data, participants){
++   
++   stopifnot(all(c("Participant", "aaSeq", "abundance") %in% names(TCR_data)))
++   TCR_mat = reshape2::acast(TCR_data, aaSeq ~ Participant, 
++                             value.var="abundance")
++   
++   TCR_mat = TCR_mat[,colnames(TCR_mat) %in% participants]
++   
++   TCR_p_others = setdiff(participants, colnames(TCR_mat))
++   extra_dat    = matrix(0, nrow=nrow(TCR_mat), ncol=length(TCR_p_others))
++   colnames(extra_dat) = TCR_p_others
++   TCR_mat = cbind(TCR_mat, extra_dat)
++   
++   TCR_mat[is.na(TCR_mat)] = 0
++   TCR_mat[TCR_mat > 0]    = 1
++   
++   return (TCR_mat)
++ }
+> 
+> 
+> get_mut_matrix <- function(mut_data, participants){
++   
++   stopifnot(all(c("participant", "key") %in% names(mut_data)))
++   mut_data$value = 1
++   mut_mat = reshape2::acast(mut_data, key ~ participant, 
++                             value.var = "value", fill=0)
++   
++   mut_mat = mut_mat[,colnames(mut_mat) %in% participants]
++   
++   mut_p_others = setdiff(participants, colnames(mut_mat))
++   extra_dat    = matrix(0, nrow=nrow(mut_mat), ncol=length(mut_p_others))
++   colnames(extra_dat) = mut_p_others
++   mut_mat  = cbind(mut_mat, extra_dat)
++   
++   return(mut_mat)
++ }
+> 
+> # --------------------------------------------------------------------
+> # Data analysis
+> # --------------------------------------------------------------------
+> 
+> ## Read in data
+> TCR_data   <- fread(file.path(data_dir, sprintf("TCR_%s_5.tsv", chain)))
+> mut_data   <- fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+> sample_ins <- fread(file.path(data_dir, "sample_info_intersection.tsv"))
+> 
+> dim(TCR_data)
+[1] 21846     4
+> dim(mut_data)
+[1] 40080     2
+> dim(sample_ins)
+[1] 8018    7
+> 
+> head(TCR_data)
+    Participant          aaSeq chain abundance
+1: TCGA-61-2016 CAAAGGTSYGKLTF alpha         2
+2: TCGA-BF-A5EQ CAAAGGTSYGKLTF alpha         2
+3: TCGA-BR-8486 CAAAGGTSYGKLTF alpha         1
+4: TCGA-K4-AAQO CAAAGGTSYGKLTF alpha         1
+5: TCGA-XU-AAXW CAAAGGTSYGKLTF alpha         1
+6: TCGA-D7-6822     CAAAGNKLTF alpha         1
+> head(mut_data)
+    participant                    key
+1: TCGA-02-0003    TP53:17:7577094:G:A
+2: TCGA-02-0003  PIK3R1:5:67589138:G:A
+3: TCGA-02-0033    TP53:17:7577538:C:T
+4: TCGA-02-0033 SLC9C1:3:111887770:C:T
+5: TCGA-02-0033 PIK3CA:3:178936082:G:A
+6: TCGA-02-0047  KRT15:17:39673185:C:T
+> head(sample_ins)
+    participant abundance purity T_cell_prop n_mut n_non_silent_mut cancer_type
+1: TCGA-02-0047         7   0.69  0.04926073    87               63         GBM
+2: TCGA-02-0055         6   0.55  0.02825506    76               49         GBM
+3: TCGA-02-2483        10   0.73  0.02388189    70               45         GBM
+4: TCGA-02-2485        14   0.87  0.02776543    75               52         GBM
+5: TCGA-02-2486        34   0.72  0.05040473    74               57         GBM
+6: TCGA-04-1348       457   0.76  0.09715555    81               58          OV
+> 
+> ctype = cancer_type
+> train_set <- sample_ins[sample_ins$cancer_type != ctype,]
+> 
+> cat(sprintf("cancer type for testing: %s, n for training = %d\n", 
++             cancer_type, nrow(train_set)))
+cancer type for testing: LIHC, n for training = 7728
+> cat(date(), "\n")
+Sun Aug 20 23:40:15 2023 
+> 
+> participants <- train_set[["participant"]]
+> T_cell_prop  <- train_set$T_cell_prop
+> 
+> TCR_mat      <- get_TCR_matrix(TCR_data, participants)
+> mut_mat      <- get_mut_matrix(mut_data, participants)
+> 
+> dim(TCR_mat)
+[1] 2333 7728
+> dim(mut_mat)
+[1] 5223 7728
+> 
+> stopifnot(setequal(train_set$participant, colnames(TCR_mat)))
+> stopifnot(setequal(train_set$participant, colnames(mut_mat)))
+> 
+> TCR_mat <- TCR_mat[,match(train_set$participant, colnames(TCR_mat))]
+> mut_mat <- mut_mat[,match(train_set$participant, colnames(mut_mat))]
+> 
+> n_per_mut <- rowSums(mut_mat)
+> n_per_TCR <- rowSums(TCR_mat)
+> mut_mat <- mut_mat[which(n_per_mut >= 5), ]
+> TCR_mat <- TCR_mat[which(n_per_TCR >= 5), ]
+> 
+> dim(TCR_mat)
+[1] 1763 7728
+> dim(mut_mat)
+[1] 3925 7728
+> 
+> cores = 10
+> 
+> n_TCRs = nrow(TCR_mat)
+> n_muts = nrow(mut_mat)
+> 
+> cl <- makePSOCKcluster(cores)
+> 
+> if(at_cluster){
++   clusterEvalQ(cl, .libPaths("/fh/fast/sun_w/Rlibs"))
++ }
+> 
+> registerDoParallel(cl)
+> 
+> logistic_reg <- function(y, x, T_cell_prop, l0){
++   l1  = glm(y ~ x + T_cell_prop, family = "binomial")
++   lrt = anova(l0, l1, test = "LRT")
++   pv1 = as.numeric(lrt$`Pr(>Chi)`[2])
++   pv1
++ }
+> 
+> res_i = foreach(i = 1:n_TCRs, .combine="rbind")  %dopar%  {
++   if(i %% 100 == 0){ cat(i, date(), "\n") }
++   y  = TCR_mat[i,]
++   l0 = glm(y ~ T_cell_prop, family = "binomial")
++   
++   date()
++   pvals <- sapply(1:n_muts, function(j) {
++     logistic_reg(y, mut_mat[j,], T_cell_prop=T_cell_prop, l0=l0)
++   })
++   date()
++   
++   df1 = data.frame(TCR = rep(rownames(TCR_mat)[i], n_muts), 
++                    mut = rownames(mut_mat), 
++                    pval_LRT = pvals)
++   df1 = df1[df1$pval_LRT <= 0.1, ]
++ }
+> 
+> stopCluster(cl) 
+> 
+> cat(sprintf("%d TCRs, %d mutations, %d association results\n", 
++                  nrow(TCR_mat), nrow(mut_mat), nrow(res_i)))
+1763 TCRs, 3925 mutations, 55873 association results
+> 
+> fwrite(res_i, file=file.path(res_dir, sprintf("train_%s_wo_%s.tsv", 
++                                               chain, cancer_type)), 
++        sep="\t")
+> 
+> gc()
+           used  (Mb) gc trigger   (Mb) limit (Mb)  max used   (Mb)
+Ncells   776649  41.5    1477954   79.0         NA   1198295   64.0
+Vcells 45838286 349.8  152024867 1159.9      65536 144714672 1104.1
+> sessionInfo()
+R version 4.2.3 (2023-03-15)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS Ventura 13.4.1
+
+Matrix products: default
+BLAS:   /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRblas.0.dylib
+LAPACK: /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRlapack.dylib
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+attached base packages:
+[1] parallel  stats     graphics  grDevices utils     datasets  methods  
+[8] base     
+
+other attached packages:
+[1] reshape2_1.4.4    dplyr_1.1.2       doParallel_1.0.17 iterators_1.0.14 
+[5] foreach_1.5.2     data.table_1.14.8
+
+loaded via a namespace (and not attached):
+ [1] Rcpp_1.0.10      codetools_0.2-19 fansi_1.0.4      utf8_1.2.3      
+ [5] plyr_1.8.8       R6_2.5.1         lifecycle_1.0.3  magrittr_2.0.3  
+ [9] pillar_1.9.0     stringi_1.7.12   rlang_1.1.0      cli_3.6.1       
+[13] vctrs_0.6.2      generics_0.1.3   tools_4.2.3      stringr_1.5.0   
+[17] glue_1.6.2       compiler_4.2.3   pkgconfig_2.0.3  tidyselect_1.2.0
+[21] tibble_3.2.1    
+> 
+> q(save = "no")
+> proc.time()
+     user    system   elapsed 
+    3.759     0.977 17588.077 

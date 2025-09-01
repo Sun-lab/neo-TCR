@@ -1,0 +1,597 @@
+---
+title: "Filtering TCR data"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 80)
+```
+
+## Load R libraries
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(Matrix)
+library(ggplot2)
+library(ggpubr)
+library(stringr)
+library(readxl)
+library(Biostrings)
+library(stringr)
+library(ggrepel)
+theme_set(theme_classic())
+```
+
+## Read in data
+
+## Hanada_2022
+Hanada, K. I., Zhao, C., Gil-Hoyos, R., Gartner, J. J., Chow-Parmer, C., Lowery, F. J., ... & Yang, J. C. (2022). A phenotypic signature that identifies neoantigen-reactive T cells in fresh human lung cancers. Cancer Cell, 40(5), 479-493.
+
+```{r}
+hanada = read_excel("data/Hanada_2022_Table_S3.xlsx", range = "A4:L17")
+hanada = as.data.frame(hanada)
+names(hanada)[1:3] = c("cloneType_ID", "antigen_identified", "antigen")
+
+hanada$patient = "Patient1"
+hanada$cell_type = "CD8"
+
+dim(hanada)
+hanada[1:2,]
+
+read_segment <- function(range1, patient, cell_type){
+  dat = read_excel("data/Hanada_2022_Table_S3.xlsx", range = range1)
+  dat = as.data.frame(dat)
+  names(dat)[1:3] = c("cloneType_ID", "antigen_identified", "antigen")
+  
+  dat$patient = patient
+  dat$cell_type = cell_type
+  dat
+}
+
+hanada = rbind(hanada, read_segment("A21:L33", "Patient1", "CD4"))
+hanada = rbind(hanada, read_segment("A37:L57", "Patient2", "CD8"))
+hanada = rbind(hanada, read_segment("A61:L76", "Patient2", "CD4"))
+hanada = rbind(hanada, read_segment("A80:L97", "Patient3", "CD8"))
+hanada = rbind(hanada, read_segment("A101:L117", "Patient3", "CD4"))
+hanada = rbind(hanada, read_segment("A121:L132", "Patient4", "CD8"))
+hanada = rbind(hanada, read_segment("A136:L140", "Patient4", "CD4"))
+
+dim(hanada)
+hanada[1:2,]
+
+hanada = hanada[,-1]
+table(hanada$antigen_identified)
+hanada = hanada[hanada$antigen_identified == "Yes",]
+hanada$antigen_type = "neoantigen"
+
+hanada = hanada[,c("TRAV", "TRAJ", "CDR3", "TRBV", "TRBD", "TRBJ", 
+                   "CDR3B", "antigen", "antigen_type", "Mutated", 
+                   "patient", "cell_type")]
+
+names(hanada)[c(3,10)] = c("CDR3A", "epitope")
+hanada$study = "Hanada_2022"
+hanada$cancer_type = "NSCLC"
+dim(hanada)
+hanada[1:2,]
+
+table(hanada$patient, hanada$cell_type)
+table(table(hanada$CDR3B))
+table(hanada$antigen_type)
+
+```
+
+
+## Lowery_2022
+Lowery, F. J., Krishna, S., ... & Rosenberg, S. A. (2022). Molecular signatures of antitumor neoantigen-reactive T cells from metastatic human cancers. Science, 375(6583), 877-884.
+
+```{r}
+lowery1 = read_excel("data/Lowery_Table_S7.xlsx", sheet=1, 
+                     range="A1:J55")
+lowery1 = data.frame(lowery1)
+dim(lowery1)
+lowery1[1:2,]
+
+lowery2 = read_excel("data/Lowery_Table_S7.xlsx", sheet=2)
+lowery2 = data.frame(lowery2)
+dim(lowery2)
+lowery2[1:2,]
+
+lowery3 = read_excel("data/Lowery_Table_S7.xlsx", sheet=3)
+lowery3 = data.frame(lowery3)
+dim(lowery3)
+lowery3[1:2,]
+
+names(lowery1)[8] = names(lowery2)[8] = names(lowery3)[8] = "antigen"
+lowery = rbind(lowery1[,1:9], lowery2[,1:9])
+
+lowery$CDR3  = paste(lowery$CDR3A, lowery$CDR3B, sep=":")
+lowery3$CDR3 = paste(lowery3$CDR3A, lowery3$CDR3B, sep=":")
+
+table(lowery3$CDR3 %in% lowery$CDR3)
+
+tb1 = table(lowery$CDR3B)
+table(tb1)
+lowery = lowery[order(lowery$CDR3B),]
+lowery[lowery$CDR3B %in% names(tb1)[tb1>1],]
+
+names(lowery)[1] = "cell_type"
+names(lowery)[5] = "patient"
+names(lowery)[9] = "epitope"
+dim(lowery)
+lowery[1:2,]
+
+l1 = lowery
+lowery = data.frame(TRAV=NA, TRAJ=NA, CDR3A=l1$CDR3A, 
+                    TRBV=NA, TRBD=NA, TRBJ=NA, CDR3B=l1$CDR3B,
+                    antigen=l1$antigen, antigen_type="neoantigen", 
+                    epitope=l1$epitope, patient=l1$patient, 
+                    cell_type=l1$cell_type, study="Lowery_2022", 
+                    cancer_type="")
+
+patient_info = read_excel("data/Lowery_Table_S1.xlsx")
+patient_info = as.data.frame(patient_info)
+dim(patient_info)
+patient_info[1:2,]
+
+table(lowery$patient, useNA = "ifany")
+mat1 = match(lowery$patient, patient_info$`Patient Tumor`)
+stopifnot(all(!is.na(mat1)))
+
+lowery$cancer_type = patient_info$Histology[mat1]
+
+dim(lowery)
+lowery[1:2,]
+table(lowery$antigen_type)
+```
+
+
+## Caushi_2021
+
+Caushi, J. X., Zhang, J., Ji, Z., Vaghasia, A., Zhang, B., Hsiue, E. H. C., ... & Smith, K. N. (2021). Transcriptional programs of neoantigen-specific TIL in anti-PD-1-treated lung cancers. Nature, 596(7870), 126-132.
+
+
+```{r}
+caushi = fread("data/Caushi_2021_Table_S8.csv")
+dim(caushi)
+caushi[1:2,]
+
+names(caushi)[1:5] = c("patient", "TCRB", "antigen_type", "epitope", 
+                       "antigen")
+caushi = caushi[,1:5]
+dim(caushi)
+caushi[1:2,]
+
+caushi[antigen_type == "MANA", antigen_type:= "neoantigen"]
+caushi[antigen_type == "Viral (CMV, EBV, Influenza A)", 
+       antigen_type:= "viral_CEF"]
+caushi[antigen_type == "Viral (Influenza)", 
+       antigen_type:= "viral_Influenza"]
+
+caushi$antigen[which(caushi$antigen == "unknown")] = NA
+
+l1 = caushi
+caushi = data.frame(TRAV=NA, TRAJ=NA, CDR3A=NA, 
+                    TRBV=NA, TRBD=NA, TRBJ=NA, CDR3B=l1$TCRB,
+                    antigen=l1$antigen, antigen_type=l1$antigen_type, 
+                    epitope=l1$epitope, patient=l1$patient, 
+                    cell_type=NA, study="Caushi_2021", 
+                    cancer_type="NSCLC")
+
+dim(caushi)
+caushi[1:2,]
+table(caushi$patient, caushi$antigen_type)
+
+```
+
+
+## Sudmeier_2022
+
+Sudmeier, L. J., Hoang, K. B., Nduom, E. K., Wieland, A., Neill, S. G., Schniederjan, M. J., ... & Hudson, W. H. (2022). Distinct phenotypic states and spatial distribution of CD8+ T cell clonotypes in human brain metastases. Cell Reports Medicine, 3(5), 100620.
+
+All the TCRs reported by Sudmeier et al. are not cancer reactive, but are CEFX (a microbe pool) reactive. 
+
+```{r}
+sudmeier = fread("data/Sudmeier_2022_cefx_cells.txt", 
+                 blank.lines.skip = TRUE, header = TRUE)
+dim(sudmeier)
+sudmeier[1:3,]
+
+tcr_info = str_split(sudmeier$clonotype, pattern="_", simplify = TRUE)
+dim(tcr_info)
+tcr_info[1:2,]
+
+sudmeier[,v_gene := tcr_info[,1]]
+sudmeier[,j_gene := tcr_info[,2]]
+sudmeier[,cdr3 := tcr_info[,3]]
+
+dim(sudmeier)
+sudmeier[1:3,]
+
+
+l1 = sudmeier
+sudmeier = data.frame(TRAV=NA, TRAJ=NA, CDR3A=NA, 
+                    TRBV=l1$v_gene, TRBD=NA, TRBJ=l1$j_gene, CDR3B=l1$cdr3,
+                    antigen=NA, antigen_type="viral", 
+                    epitope="", patient=l1$patient, 
+                    cell_type=NA, study="Sudmeier_2022", 
+                    cancer_type="Brain_metastases")
+
+dim(sudmeier)
+sudmeier[1:2,]
+table(sudmeier$patient)
+table(sudmeier$patient, sudmeier$antigen_type)
+
+```
+
+## Veatch_2022
+
+Veatch, J. R., Lee, S. M., ... & Riddell, S. R. (2022). Neoantigen-specific CD4+ T cells in human melanoma have diverse differentiation states and correlate with CD8+ T cell, macrophage, and B cell function. Cancer cell, 40(4), 393-409.
+
+
+### A function to extract CDR3 from DNA sequence. 
+
+```{r}
+table(str_sub(hanada$CDR3B, 1, 2))
+table(str_sub(hanada$CDR3B, -1, -1))
+
+table(str_sub(lowery$CDR3B, 1, 2))
+table(str_sub(lowery$CDR3B, -1, -1))
+
+table(str_sub(sudmeier$CDR3B, 1, 2))
+table(str_sub(sudmeier$CDR3B, -1, -1))
+
+DNA2CDR3 <- function(x){
+  
+  cdr3_all = rep("", length(x))
+  
+  # remove those with "N" in the DNA sequence
+  gN = grep("N", x)
+  length(gN)
+  
+  if(length(gN) > 0){ 
+    cdr3_all[gN] = NA
+    x = x[-gN]
+  }
+  table(is.na(cdr3_all))
+
+  aa = as.character(translate(DNAStringSet(x)))
+
+  CDR3 = str_sub(aa, start = 1L, end=-3L)
+  
+  start_pos = str_locate(CDR3, "CA|CS")
+  w2rm = which(is.na(start_pos[,1]))
+  start_pos[w2rm,1] = 1
+  CDR3 = str_sub(CDR3, start = start_pos[,1], end=-1L)
+  CDR3[w2rm] = NA
+  
+  if(length(gN) > 0){
+    cdr3_all[-gN] = CDR3
+  }else{
+    cdr3_all = CDR3
+  }
+  
+  print("first two AA:")
+  print(table(str_sub(cdr3_all, 1, 2), useNA="ifany"))
+  print("last AA:")
+  print(table(str_sub(cdr3_all, -1, -1), useNA="ifany"))
+  print("CDR3 length:")
+  print(table(nchar(cdr3_all), useNA="ifany"))
+  
+  cdr3_all
+}
+```
+
+### Collect TCR data
+
+The number of TCRs responding to neoantigen, self-antigen, and viral antigen can be found in Figure 1I of Veatch et al.
+
+```{r}
+patients = c("X422", "X197", "X205", "X198")
+
+veatch = NULL
+
+for(p1 in patients){
+  if(p1 == "X205"){
+    dat = read_excel("data/x205 adaptive 8-17-20.xlsx")
+    dat = data.frame(dat)
+  }else{
+    dat = read_excel("data/Veatch_2022_Table_S2.xlsx", skip = 2, 
+                   sheet=p1)
+    dat = data.frame(dat)
+  }
+  dim(dat)
+  dat[1:3,1:min(15,ncol(dat))]
+
+  names(dat)[1] = "Rearrangement"
+  table(nchar(dat$Rearrangement))
+  
+  if(p1 == "X197" || p1 == "X198"){
+    dat$Rearrangement = str_sub(dat$Rearrangement, start=3)
+  }
+  
+  dat$CDR3 = DNA2CDR3(dat$Rearrangement)
+  
+  if(p1 == "X422"){
+    w2kp = which(dat$antigen != "")
+    df1  = dat[w2kp, c("CDR3", "antigen")]
+    df1$antigen_type = "neoantigen"
+    df1$patient = p1
+    df1 = unique(df1)
+    veatch = rbind(veatch, df1)
+  }
+  
+  if(p1 == "X197"){
+    w2kp = which(dat$clone == "BRAF")
+    df1 = data.frame(CDR3=dat$CDR3[w2kp], antigen="BRAF")
+    df1$antigen_type = "neoantigen"
+    df1$patient = p1
+    df1 = unique(df1)
+    veatch = rbind(veatch, df1)
+    
+    w2kp = which(dat$viral == "viral")
+    df1 = data.frame(CDR3=dat$CDR3[w2kp], antigen=NA)
+    df1$antigen_type = "viral"
+    df1$patient = p1
+    df1 = unique(df1)
+    veatch = rbind(veatch, df1)
+  }
+
+  if(p1 == "X205"){
+    w_neoag = which(!is.na(dat$clone.neo))
+    w_self  = which(dat$self == "self")
+    w_viral = which(dat$viral.pd.1.int == "viral" | dat$viral.pd.1.low == "viral")
+    
+    df1  = dat[w_neoag, c("CDR3", "clone.neo")]
+    names(df1)[2] = "antigen"
+    df1$antigen[df1$antigen == "unknown"] = NA
+
+    df1$antigen_type = "neoantigen"
+    df1$patient = p1
+    df1 = unique(df1)
+
+    veatch = rbind(veatch, df1)
+    
+    df1  = dat[w_self, c("CDR3", "self")]
+    names(df1)[2] = "antigen"
+    df1$antigen_type = "self"
+    df1$patient = p1
+    df1$antigen = NA
+    df1 = unique(df1)
+
+    veatch = rbind(veatch, df1)
+
+    df1  = dat[w_viral, c("CDR3", "viral.pd.1.int")]
+    names(df1)[2] = "antigen"
+    df1$antigen = NA
+    df1$antigen_type = "viral"
+    df1$patient = p1
+    df1 = unique(df1)
+
+    veatch = rbind(veatch, df1)
+  }
+
+  if(p1 == "X198"){
+    w2kp = which((!is.na(dat$CD4.clone...2)))
+    df1  = dat[w2kp, c("CDR3", "CD4.clone...2")]
+    names(df1)[2] = "antigen"
+    df1$antigen_type = "neoantigen"
+    df1$antigen_type[which(df1$antigen == "Viral")] = "viral"
+    df1$antigen[which(df1$antigen == "Viral")] = NA
+    df1$patient = p1
+    df1 = unique(df1)
+
+    veatch = rbind(veatch, df1)
+  }
+}
+
+dim(veatch)
+veatch[1:2,]
+
+
+l1 = veatch
+veatch = data.frame(TRAV=NA, TRAJ=NA, CDR3A=NA, 
+                    TRBV=NA, TRBD=NA, TRBJ=NA, CDR3B=l1$CDR3,
+                    antigen=l1$antigen, antigen_type=l1$antigen_type, 
+                    epitope="", patient=l1$patient, 
+                    cell_type="CD4", study="Veatch_2022", 
+                    cancer_type="Melanoma")
+
+dim(veatch)
+veatch[1:2,]
+
+table(veatch$antigen_type, veatch$patient)
+
+```
+
+
+## Combine data across studies
+
+```{r}
+df = hanada
+df = rbind(df, lowery)
+df = rbind(df, caushi)
+df = rbind(df, sudmeier)
+df = rbind(df, veatch)
+
+dim(df)
+df[1:2,]
+table(df$study, useNA="ifany")
+table(df$antigen_type, useNA="ifany")
+table(df$study, df$cell_type, useNA="ifany")
+table(df$study, df$cancer_type, useNA="ifany")
+
+fwrite(df, "data/cancer_reactive_TCRs.tsv", sep="\t")
+```
+
+
+## Compare CDR3 between cancer TCRs vs. other TCRs
+
+### CDR3 length
+```{r fig.width=4, fig.height=3}
+viral_grp = c("viral_Influenza", "viral_CEF")
+
+df$CDR3B_len = nchar(df$CDR3B)
+df$`antigen_type`[df$`antigen_type` %in% viral_grp] = "viral"
+
+table(df$study, df$antigen_type)
+
+df1 = as.data.frame(table(df$CDR3B_len, df$study=="Sudmeier_2022"))
+names(df1) = c("CDR3B length", "Sudmeier_2022", "freq")
+df1$study = "others"
+df1$study[which(df1$Sudmeier_2022 == TRUE)] = "Sudmeier 2022"
+
+df1$relative_freq = NA
+for(a1 in unique(df1$study)){
+  wa = which(df1$study == a1)
+  df1$relative_freq[wa] = df1$freq[wa]/sum(df1$freq[wa])
+}
+
+ggplot(df1, aes(x = `CDR3B length`, y = relative_freq, 
+                fill=study)) + 
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "CDR3B length")
+
+w2use = which(df$study != "Sudmeier_2022")
+df1 = as.data.frame(table(df$CDR3B_len[w2use], df$antigen_type[w2use]))
+names(df1) = c("CDR3B length", "antigen type", "freq")
+
+df1
+df1 = df1[df1$`antigen type` != "self",]
+
+df1$relative_freq = NA
+for(a1 in unique(df1$`antigen type`)){
+  wa = which(df1$`antigen type` == a1)
+  df1$relative_freq[wa] = df1$freq[wa]/sum(df1$freq[wa])
+}
+
+ggplot(df1, aes(x = `CDR3B length`, y = relative_freq, 
+                fill=`antigen type`)) + 
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "CDR3B length for all TCRs")
+
+t1 = table(df$CDR3B_len[w2use], df$antigen_type[w2use])
+t1 = t1[,-2]
+
+t1
+chisq.test(t1)
+```
+
+### Use of amino acids for all studies
+
+```{r fig.width = 3, fig.height = 3}
+aas = strsplit(df$CDR3B, split="")
+aas_by_antigen = tapply(aas, df$antigen_type, function(x){unlist(x)})
+
+n_aa = lapply(aas_by_antigen, length)
+n_aa
+
+df2 = data.frame(aa=c(aas_by_antigen$neoantigen, aas_by_antigen$viral), 
+                 antigen = rep(c("neoantigen", "viral"), 
+                               times=c(n_aa$neoantigen, n_aa$viral)))
+dim(df2)
+df2[1:2,]
+
+t1 = table(df2$aa, df2$antigen)
+dim(t1)
+t1
+
+chisq.test(t1)
+
+t1 = t(t(t1)/colSums(t1))
+t1 = round(data.matrix(t1),3)
+dim(t1)
+t1[1:2,]
+
+df1 = data.frame(aa = rownames(t1), neoantigen = t1[,1], viral = t1[,2])
+dim(df1)
+df1
+
+ggplot(df1, aes(x=viral, y=neoantigen, label = aa)) + 
+  geom_point(color="orange") + geom_text_repel() + 
+  geom_abline(slope=1, intercept = 0, color="grey")
+
+```
+
+### Use of amino acids for all studies except Sudmeier et al. 2022
+
+
+```{r fig.width = 3, fig.height = 3}
+table(df$study)
+df = df[df$study != "Sudmeier_2022",]
+table(df$study)
+
+aas = strsplit(df$CDR3B, split="")
+aas_by_antigen = tapply(aas, df$antigen_type, function(x){unlist(x)})
+
+n_aa = lapply(aas_by_antigen, length)
+n_aa
+
+df2 = data.frame(aa=c(aas_by_antigen$neoantigen, aas_by_antigen$viral), 
+                 antigen = rep(c("neoantigen", "viral"), 
+                               times=c(n_aa$neoantigen, n_aa$viral)))
+dim(df2)
+df2[1:2,]
+
+t1 = table(df2$aa, df2$antigen)
+dim(t1)
+t1
+
+chisq.test(t1)
+
+t1 = t(t(t1)/colSums(t1))
+t1 = round(data.matrix(t1),3)
+dim(t1)
+t1[1:2,]
+
+df1 = data.frame(aa = rownames(t1), neoantigen = t1[,1], viral = t1[,2])
+dim(df1)
+df1
+
+ggplot(df1, aes(x=viral, y=neoantigen, label = aa)) + 
+  geom_point(color="orange") + geom_text_repel() + 
+  geom_abline(slope=1, intercept = 0, color="grey")
+```
+
+### Check those TCRs that target the same gene
+
+```{r}
+t1 = table(df$antigen)
+table(t1)
+t1 = sort(t1, decreasing = TRUE)
+t1[t1 >= 3]
+
+cols = c("CDR3B", "antigen", "patient", "study")
+df[which(df$antigen == "SNRPB"), cols]
+df[which(df$antigen == "FLNA"), cols]
+df[which(df$antigen == "ERAP1"), cols]
+df[which(df$antigen == "KRAS"), cols]
+df[which(df$antigen == "TP53"), cols]
+df[which(df$antigen == "HTATSF1"), cols]
+df[which(df$antigen == "BPNT1"), cols]
+df[which(df$antigen == "POLE"), cols]
+df[which(df$antigen == "BRAF"), cols]
+df[which(df$antigen == "EGFR"), cols]
+df[which(df$antigen == "TGFB"), cols]
+```
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

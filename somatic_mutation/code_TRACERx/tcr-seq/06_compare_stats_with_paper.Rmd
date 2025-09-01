@@ -1,0 +1,81 @@
+---
+title: "Reproduce paper figures"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/fh/fast/sun_w/yub/tcr/tracerx/tcr-seq')
+library(tidyverse)
+library(ggpubr)
+```
+
+```{r}
+create_plots <- function(df) {
+  # Total number of TCRs per sample
+  ntcr_per_sample = df |> 
+    group_by(chain, sample_name) |>
+    summarise(ntcr = n(), .groups = 'drop')
+  p1 = ggplot(ntcr_per_sample, aes(chain, ntcr)) +
+    geom_boxplot() +
+    geom_jitter() +
+    scale_y_log10() +
+    labs(x = '', y = 'Number of TCRs per sample') +
+    theme_pubr()
+  # Number of unique TCRs per sample
+  n_unique_tcr_per_sample = df |> 
+    group_by(chain, sample_name) |>
+    summarise(n_unique_tcr = length(unique(cdr3_aa)), .groups = 'drop')
+  p2 = ggplot(n_unique_tcr_per_sample, aes(chain, n_unique_tcr)) +
+    geom_boxplot() +
+    geom_jitter() +
+    scale_y_log10() +
+    labs(x = '', y = 'Total number of unique TCRs perf sample') +
+    theme_pubr()
+  # Correlation between number of alpha & beta TCRs
+  data_compare_ntcr = ntcr_per_sample |> 
+    mutate(region = sapply(strsplit(sample_name, '_TR'), head, n = 1)) |>
+    pivot_wider(id_cols = 'region', names_from = 'chain', values_from = 'ntcr')
+  p3 = ggplot(data_compare_ntcr, aes(A, B)) +
+    geom_point() +
+    geom_abline(intercept = 0, slope = 1, color = 'red') +
+    scale_x_log10() +
+    scale_y_log10() +
+    theme_pubr()
+  # Combine
+  ggarrange(p1, p2, p3, nrow = 1)
+}
+```
+
+## Descriptive statistics from the original paper
+
+See <https://www.nature.com/articles/s41591-019-0592-2/figures/7> for the original description.
+
+Below is the description based on the data I processed.
+
+## Load TCR
+
+```{r Load TCR}
+tcr = readRDS('df_tcr.rds')
+```
+
+## For tumors
+
+```{r, fig.width=15, fig.height=6}
+create_plots(tcr |> filter(tissue == 'Lung tumour'))
+```
+
+## For non-tumor lung
+
+```{r, fig.width=15, fig.height=6}
+create_plots(tcr |> filter(tissue == 'Non-tumour Lung'))
+```
+
+## For blood
+
+```{r, fig.width=15, fig.height=6}
+create_plots(tcr |> filter(tissue == 'Blood'))
+```

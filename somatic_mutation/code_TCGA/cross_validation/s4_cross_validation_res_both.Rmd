@@ -1,0 +1,302 @@
+---
+title: "Summerize cross validation by combining alpha and beta chain"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+
+## R library
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(viridis)
+library(pROC)
+library(stringr)
+library(reshape2)
+library(flextable)
+
+source("../_utilities.R")
+
+theme_set(theme_classic())
+ 
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+res_dir  = "~/research/data/TCR/TCGA/_results/_cross_validation"
+```
+
+# Summrize results
+
+## Read in data
+```{r}
+TCR_data_a  = fread(file.path(data_dir, "TCR_alpha_5.tsv"))
+TCR_data_b  = fread(file.path(data_dir, "TCR_beta_5.tsv"))
+mut_data    = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data_a)
+dim(TCR_data_b)
+
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data_a)
+head(TCR_data_b)
+
+head(mut_data)
+head(sample_info)
+```
+
+## Result files
+
+```{r}
+res_files_a = list.files(res_dir, "train_alpha_wo_")
+res_files_a
+
+res_files_b = gsub("alpha", "beta", res_files_a)
+stopifnot(all(file.exists(file.path(res_dir, res_files_b))))
+```
+
+## Check the mutations that appear 5 or more times
+
+### Generate prediction results
+
+```{r}
+result_matrix = NULL
+
+pcuts = c(5e-3, 1e-2, 5e-2, 1e-1, 2e-1, 5e-1)
+
+for(f1 in res_files_a){
+  r1_a = fread(file.path(res_dir, f1))
+  r1_b = fread(file.path(res_dir, gsub("alpha", "beta", f1)))
+  r1_a$TCR = paste0("alpha_", r1_a$TCR)
+  r1_b$TCR = paste0("beta_",  r1_b$TCR)
+
+  r1 = rbind(r1_a, r1_b)
+  c_type = str_extract(f1, "(?<=_wo_)\\w+")
+  
+  cat("\n")
+  cat("cancer type", c_type, "\n")
+  cat(date(), "\n")
+
+  d1_a = get_dat_one_cancer(c_type, TCR_data_a, mut_data, sample_info)
+  mut1_a = d1_a$mut_mat
+  tcr1_a = d1_a$TCR_mat
+  
+  d1_b = get_dat_one_cancer(c_type, TCR_data_b, mut_data, sample_info)
+  mut1_b = d1_b$mut_mat
+  tcr1_b = d1_b$TCR_mat
+  
+  stopifnot(identical(mut1_a, mut1_b))
+  stopifnot(all(colnames(tcr1_a) == colnames(tcr1_b)))
+
+  rownames(tcr1_a) = paste0("alpha_", rownames(tcr1_a))
+  rownames(tcr1_b) = paste0("beta_",  rownames(tcr1_b))
+  tcr1 = rbind(tcr1_a, tcr1_b)
+  
+  mut1 = mut1_a
+
+  n_per_mut = rowSums(mut1)
+  ww3 = which(n_per_mut >= 3)
+  
+  if(length(ww3) == 0){
+    cat("no mutation appear in 3 or more subjects.\n")
+  }else{
+    mut_nms = rownames(mut1)[ww3]
+    
+    cat(sprintf("there are %d mutation appear in 3 or more subjects.\n", 
+                length(ww3)))
+    
+    mut_nms = mut_nms[which(mut_nms %in% r1$mut)]
+    
+    cat(sprintf("%d mutations are associated with at least one TCR.\n", 
+                length(mut_nms)))
+    
+
+    for(j in 1:length(mut_nms)){
+      mut_j = mut1[rownames(mut1) == mut_nms[j],]
+      res_j = r1[which(r1$mut == mut_nms[j]),,drop = FALSE]
+      
+      # apply different p-value cutoff for alpha and beta
+      for(i in 1:length(pcuts)){
+        for(k in 1:length(pcuts)){
+
+          pcut_i = pcuts[i]
+          pcut_k = pcuts[k]
+          
+          ww_A = which(res_j$pval_LRT < pcut_i & grepl("^alpha_", res_j$TCR))
+          ww_B = which(res_j$pval_LRT < pcut_k & grepl("^beta_", res_j$TCR))
+          ww_i = c(ww_A, ww_B)
+          if(length(ww_i) == 0){ next }
+          
+          tcr_ji = res_j$TCR[ww_i]
+          ww_tcr = which(rownames(tcr1) %in% tcr_ji)
+          if(length(ww_tcr) == 0){ next }
+          
+          tcr_pred_ji = colSums(tcr1[ww_tcr,,drop=FALSE] > 0)
+          
+          auc_val = auc(response=mut_j, predictor=tcr_pred_ji, 
+                        quiet=TRUE, direction="<")
+  
+          auc_ci  = ci.auc(response=mut_j, predictor=tcr_pred_ji, 
+                           quiet=TRUE, direction="<")
+          
+          auc_ci  = signif(auc_ci, 3)
+          df1 = data.frame(cancer=c_type, mut=mut_nms[j], auc=signif(auc_val,3), 
+                           auc_ci_low=auc_ci[1], auc_ci_med=auc_ci[2], 
+                           auc_ci_upper=auc_ci[3], pcut_A = pcut_i, pcut_B = pcut_k)
+          
+          result_matrix = rbind(result_matrix, df1)
+        }
+      }
+    }
+  }
+}
+```
+
+### Summerize prediction results
+
+```{r fig.width=7, fig.height=5}
+setDT(result_matrix)
+
+dim(result_matrix)
+result_matrix = result_matrix[order(-auc),]
+
+flextable(result_matrix[1:20,])
+table(result_matrix$pcut_A)
+table(result_matrix$pcut_B)
+
+pcuts = sort(unique(result_matrix$pcut_A))
+length(pcuts)
+
+df_min_auc_4_pcuts <- expand.grid(pcut_A = pcuts, pcut_B = pcuts, 
+                                  KEEP.OUT.ATTRS = FALSE)
+df_min_auc_4_pcuts$min_auc = NA
+dim(df_min_auc_4_pcuts)
+df_min_auc_4_pcuts[1:2,]
+
+auc_cutoffs = seq(0.51, 0.7, by=0.001)
+
+for(k in 1:nrow(df_min_auc_4_pcuts)){
+  
+  pcut_a = df_min_auc_4_pcuts$pcut_A[k]
+  pcut_b = df_min_auc_4_pcuts$pcut_B[k]
+  
+  auc_vals = result_matrix[pcut_A == pcut_a & pcut_B == pcut_b, 'auc']
+  auc_vals = unlist(auc_vals)
+  if(length(auc_vals) < 50){
+    print(sprintf("pcuts = (%.2e, %.2e), no enough observations.", 
+                    pcut_a, pcut_b))
+    print("set auc cutoff to be 0.52")
+    df_min_auc_4_pcuts$min_auc[k] = 0.52
+  }
+  
+  fdrs = rep(NA, length(auc_cutoffs))
+  
+  for(i in 1:length(auc_cutoffs)){
+    auc1 = auc_cutoffs[i]
+    nD = sum(auc_vals > auc1)
+    if(nD == 0){ fdrs[i] = 0 }
+    else{ fdrs[i] = min(1, sum(auc_vals < 1-auc1)/nD) }
+  }
+  
+  for(i in length(auc_cutoffs):2){
+    if(fdrs[i-1] < fdrs[i]){
+      fdrs[i-1] = fdrs[i]
+    }
+  }
+  
+  df1 = data.frame(auc = auc_cutoffs, fdr = fdrs)
+  df_min_auc_4_pcuts$min_auc[k] = min(auc_cutoffs[fdrs < 0.2])
+}
+
+
+ggplot(df_min_auc_4_pcuts, aes(x = -log10(pcut_B), y = min_auc, 
+                               color = factor(pcut_A), 
+                               group = factor(pcut_A))) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = expression(-log[10](pcut[B])),
+    y = "AUC",
+    color = "pcut_A"
+  ) + scale_color_viridis_d(option = "turbo", end = 0.95) + 
+  theme_minimal(base_size = 14)
+
+ggplot(df_min_auc_4_pcuts, aes(x = -log10(pcut_A), y = min_auc, 
+                               color = factor(pcut_B), 
+                               group = factor(pcut_B))) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = expression(-log[10](pcut[A])),
+    y = "AUC",
+    color = "pcut_B"
+  ) + scale_color_viridis_d(option = "turbo", end = 0.95) + 
+  theme_minimal(base_size = 14)
+
+
+w2kp = NULL
+for(k in 1:nrow(df_min_auc_4_pcuts)){
+  pcut_a = df_min_auc_4_pcuts$pcut_A[k]
+  pcut_b = df_min_auc_4_pcuts$pcut_B[k]
+  auck = df_min_auc_4_pcuts$min_auc[k]
+  w2kp = c(w2kp, which(abs(result_matrix$pcut_A - pcut_a) < 1e-10 & 
+                      abs(result_matrix$pcut_B - pcut_b) < 1e-10 & 
+                         result_matrix$auc > auck))
+}
+length(w2kp)
+
+result_sub = result_matrix[w2kp, 
+                  c("cancer", "auc", "auc_ci_low", "pcut_A", "pcut_B", "mut")]
+
+summary(result_sub$auc)
+result_sub = result_sub[order(result_sub$auc, decreasing = TRUE),]
+dim(result_sub)
+flextable(result_sub[1:50,])
+
+```
+
+
+## Write out results
+
+```{r}
+write.table(result_sub, row.names = FALSE, 
+            file.path(res_dir, "cross_validation_res_both.tsv"), 
+            sep="\t")
+
+write.table(df_min_auc_4_pcuts, row.names = FALSE, 
+            file.path(res_dir, "cv_both_auc_4_pcuts.tsv"), 
+            sep="\t")
+```
+
+# Session information
+
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

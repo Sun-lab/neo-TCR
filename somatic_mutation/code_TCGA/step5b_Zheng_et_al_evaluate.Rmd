@@ -1,0 +1,278 @@
+---
+title: "Evalaute the model trained by TCGA data using the data from Zheng et al."
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+params:
+  pcut_A: 0.10
+  pcut_B: 0.20
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(pROC)
+library(ROCR)
+library(ggrepel)
+theme_set(theme_classic())
+
+data_dir   = "~/research/data/TCR/TCGA/_processed_data"
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+pcut_A = as.numeric(params$pcut_A)
+pcut_B = as.numeric(params$pcut_B)
+
+pcut_A
+pcut_B
+```
+
+# Read in data
+
+## read mutation and TCR data
+```{r fig.width=5, fig.height=3}
+mut_dat = fread("../data/mut_dat_matrix.tsv")
+dim(mut_dat)
+mut_dat[1:2,1:3]
+
+mut_mat = data.matrix(mut_dat[,-1])
+rownames(mut_mat) = mut_dat$mutation
+
+TCR_A = fread("../data/TCR_alpha_dat_matrix.tsv")
+dim(TCR_A)
+TCR_A[1:2,1:3]
+
+TA_mat = data.matrix(TCR_A[,-1])
+rownames(TA_mat) = TCR_A$TCR
+
+TCR_B = fread("../data/TCR_beta_dat_matrix.tsv")
+dim(TCR_B)
+TCR_B[1:2,1:3]
+
+TB_mat = data.matrix(TCR_B[,-1])
+rownames(TB_mat) = TCR_B$TCR
+
+stopifnot(all(names(mut_dat)[-1] == names(TCR_A)[-1]))
+stopifnot(all(names(mut_dat)[-1] == names(TCR_B)[-1]))
+```
+
+
+# Check prediction by TCR
+
+## Load prediction model
+
+```{r}
+fnm = sprintf("TCGA_res_TCR_predictors_pval_pA_%.1e_pB_%.1e.rds", pcut_A, pcut_B)
+TCR_pred = readRDS(file = file.path(result_dir, fnm))
+length(TCR_pred)
+names(TCR_pred)[1:5]
+```
+
+## Check SNP reference genome version
+Both Zheng et al. and TCGA use GRCh37.
+
+```{r}
+grep("BRAF", names(TCR_pred), value = TRUE)
+mut_dat$mutation[grep("BRAF", mut_dat$mutation)]
+
+table(mut_dat$mutation %in% names(TCR_pred))
+all_muts = intersect(mut_dat$mutation, names(TCR_pred))
+length(all_muts)
+
+mut_mat = mut_mat[match(all_muts, rownames(mut_mat)),]
+dim(mut_mat)
+```
+
+
+# Make prediction for each somatic mutation
+
+Since this is scRNA-seq data, one TCR may appear in many cells. We can count somatic- mutation-related TCRs across all cells. 
+
+## Construction prediction matrics
+
+```{r}
+pred_mtx_A =  matrix(0, nrow=length(all_muts), ncol=ncol(mut_mat))
+rownames(pred_mtx_A) = all_muts
+colnames(pred_mtx_A) = names(mut_mat)
+
+pred_mtx_B = pred_mtx_A
+
+for(i in 1:length(all_muts)){
+  mut_i = all_muts[i]
+  prd_i = TCR_pred[[mut_i]]
+  stopifnot(length(prd_i) > 0)
+  
+  if(length(prd_i$TCRA) > 0){
+    wi = which(rownames(TA_mat) %in% prd_i$TCRA)
+    if(length(wi) > 0){
+      pred_mtx_A[i,] = colSums(TA_mat[wi,,drop=FALSE]>0)
+    }
+  }
+  
+  if(length(prd_i$TCRB) > 0){
+    wi = which(rownames(TB_mat) %in% prd_i$TCRB)
+    if(length(wi) > 0){
+      pred_mtx_B[i,] = colSums(TB_mat[wi,,drop=FALSE]>0)
+    }
+  }
+}
+
+dim(pred_mtx_A)
+dim(pred_mtx_B)
+
+summary(rowSums(pred_mtx_A > 0))
+summary(rowSums(pred_mtx_B > 0))
+
+dim(pred_mtx_A)
+dim(pred_mtx_B)
+```
+
+
+## Evaluate prediction for each mutation
+
+Most mutation only occur once and thus the evaluation will not be very accurate for those mutations. 
+
+```{r fig.width=3, fig.height = 3}
+table(rowSums(mut_mat))
+
+# for scTCR data, the read-depth are the same for alpha nad beta chains
+summary(colSums(TA_mat))
+summary(colSums(TB_mat))
+
+rd = colSums(TA_mat)
+
+auc_mat = matrix(nrow=nrow(mut_mat), ncol=3)
+
+for(i in 1:nrow(mut_mat)){
+  y_i = mut_mat[i,]
+  x_A = pred_mtx_A[i,]
+  x_B = pred_mtx_B[i,]
+  x_AB = x_A + x_B
+  table(x_AB, y_i)
+  
+  auc_mat[i, 1] = auc(y_i, x_A, quiet=TRUE, direction="<")
+  auc_mat[i, 2] = auc(y_i, x_B, quiet=TRUE, direction="<")
+  auc_mat[i, 3] = auc(y_i, x_AB, quiet=TRUE, direction="<")
+
+  # auc_mat[i, 8:9] = ci.auc(y_i, x_AB, quiet=TRUE, direction="<")[c(1,3)]
+}
+
+colnames(auc_mat) = c("AUC_alpha", "AUC_beta", "AUC_both")
+
+auc_df = data.frame(mutation = rownames(mut_mat), 
+                    mut_freq = rowSums(mut_mat))
+
+auc_df = cbind(auc_df, round(auc_mat,2))
+auc_df = auc_df[order(auc_df$AUC_both, decreasing = TRUE),]
+rownames(auc_df) = NULL
+auc_df = auc_df[order(auc_df$mut_freq, decreasing = TRUE),]
+dim(auc_df)
+auc_df[auc_df$mut_freq > 1,]
+```
+
+## Evaluate the prediction for single mutation
+
+Most mutation only occur once and thus the evaluation will not be very accurate for those mutations. 
+
+```{r fig.width=3, fig.height = 3.3}
+i   = which(auc_df$mut_freq > 3)
+w_i = which(rownames(mut_mat) == auc_df$mutation[i])
+y_i = mut_mat[w_i,]
+x_A = pred_mtx_A[w_i,]
+x_B = pred_mtx_B[w_i,]
+x_AB = x_A + x_B
+
+if(rownames(mut_mat)[w_i] == "BRAF:7:140453136:A:T"){
+  mut_name = "BRAF.p.V600E"
+}else{
+  mut_name = rownames(mut_mat)[w_i]
+}
+
+pred_obj = prediction(x_A, y_i)
+perf_obj = performance(pred_obj, "tpr", "fpr")
+auc_i = auc(y_i, x_A, quiet=TRUE, direction="<")
+
+par(bty="n")
+plot(perf_obj, main=mut_name, xlab = "1 - Specificity", ylab = "Sensitivity")
+mtext(sprintf("TCR alpha, AUC=%.2f", auc_i), side = 3, line = 0, adj = 0, cex = 1.1)
+abline(0, 1, lty=2)
+
+pred_obj = prediction(x_B, y_i)
+perf_obj = performance(pred_obj, "tpr", "fpr")
+auc_i = auc(y_i, x_B, quiet=TRUE, direction="<")
+
+plot(perf_obj, main=mut_name, xlab = "1 - Specificity", ylab = "Sensitivity")
+mtext(sprintf("TCR beta, AUC=%.2f", auc_i), side = 3, line = 0, adj = 0, cex = 1.1)
+abline(0, 1, lty=2)
+
+pred_obj = prediction(x_AB, y_i)
+perf_obj = performance(pred_obj, "tpr", "fpr")
+auc_i = auc(y_i, x_AB, quiet=TRUE, direction="<")
+
+plot(perf_obj, main=mut_name, xlab = "1 - Specificity", ylab = "Sensitivity")
+mtext(sprintf("alpha + beta, AUC=%.2f", auc_i), side = 3, line = 0, 
+      adj = 0, cex = 1.1)
+abline(0, 1, lty=2)
+
+```
+
+# Make prediction for each gene
+
+For each gene, we just use "OR" operation to combine mutation status and TCR predictors. 
+
+```{r}
+all_muts
+stopifnot(all(all_muts == rownames(mut_mat)))
+
+all_genes = str_extract(all_muts, "(\\w|\\d)+(?=:)")
+t_g = table(all_genes)
+t_g = sort(t_g, decreasing = TRUE)
+t_g
+uniq_genes = names(t_g)[t_g > 1]
+
+auc_mat = matrix(nrow=length(uniq_genes), ncol=3)
+stopifnot(all(all_muts == rownames(mut_mat)))
+
+for(i in 1:length(uniq_genes)){
+  gene_i = uniq_genes[i]
+  w_i = which(all_genes == gene_i)
+  y_i = colSums(mut_mat[w_i,]) > 0
+  x_A = colSums(pred_mtx_A[w_i,])
+  x_B = colSums(pred_mtx_B[w_i,])
+  x_AB = x_A + x_B
+  table(x_AB, y_i)
+  
+  auc_mat[i, 1] = auc(y_i, x_A, quiet=TRUE, direction="<")
+  auc_mat[i, 2] = auc(y_i, x_B, quiet=TRUE, direction="<")
+  auc_mat[i, 3] = auc(y_i, x_AB, quiet=TRUE, direction="<")
+}
+
+colnames(auc_mat) = c("AUC_alpha", "AUC_beta", "AUC_both")
+
+auc_df = data.frame(gene = uniq_genes)
+
+auc_df = cbind(auc_df, round(auc_mat,3))
+auc_df = auc_df[order(auc_df$AUC_both, decreasing = TRUE),]
+rownames(auc_df) = NULL
+auc_df
+```
+
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

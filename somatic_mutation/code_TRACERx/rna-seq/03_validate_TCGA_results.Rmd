@@ -1,0 +1,632 @@
+---
+title: "Validate TCGA results with TRACERx data"
+author: "Bo Yu, Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggpubr)
+library(data.table)
+library(Matrix)
+```
+
+## Load TRACERx mutation & TCR matrix
+
+```{r Load Tracerx mutation matrix}
+# Load raw matrix
+mut_raw = readRDS('../somatic_mutation/data/mut_mat.rds')
+
+dim(mut_raw)
+mut_raw[1:2,1:5]
+
+# Merge tumors of the same patients
+mut_tumors = rownames(mut_raw)
+mut_tumors[grep("_", mut_tumors)]
+
+mut_patients = sapply(strsplit(mut_tumors, '_'), head, n = 1)
+
+length(unique(mut_patients))
+uniq_patients = unique(mut_patients)
+
+merged_mut = matrix(NA, length(uniq_patients), ncol(mut_raw), 
+                    dimnames = list(uniq_patients, colnames(mut_raw)))
+
+for (patient in uniq_patients) {
+  curr_tumors = mut_tumors[mut_patients == patient]
+  merged_mut[patient, ] = as.numeric(colSums(mut_raw[curr_tumors, , drop = F]) > 0)
+}
+
+dim(merged_mut)
+merged_mut[1:2,1:4]
+```
+
+```{r Load Tracerx TCR matrix}
+# Load raw matrix
+tcr_raw = readRDS('results/tcr_mat.rds')
+tcr = as(tcr_raw, 'dgCMatrix')
+dim(tcr_raw)
+tcr_raw[1:3,1001:1005]
+
+grep("_", rownames(tcr_raw), value = TRUE)
+```
+
+```{r}
+# Align samples
+table(rownames(tcr_raw) %in% rownames(merged_mut))
+tumors = intersect(rownames(merged_mut), rownames(tcr_raw))
+mut = merged_mut[tumors, ]
+tcr = tcr_raw[tumors, ]
+
+# Subset mutations
+mut = mut[, colSums(mut) > 1]
+dim(mut)
+```
+
+```{r}
+# Number of tumors
+nrow(tcr)
+
+# Number of mutations
+ncol(mut)
+
+# Number of tcrs
+ncol(tcr)
+```
+
+## Check associations betwee mutations and TCRs
+
+```{r fig.width = 4, fig.height = 4}
+tcr2 <- drop0(tcr)
+tcr2@x <- as.numeric(tcr2@x > 0)
+
+tcr_freq = colSums(tcr2)
+summary(tcr_freq)
+
+tcr2 = tcr2[,tcr_freq > 1]
+dim(tcr2)
+
+table(rownames(tcr2) == rownames(mut))
+
+# Vectorized (approx) two-sided Fisher via hypergeometric tails
+# this is the classic “double the smaller one-sided tail” p-value. 
+# For Fisher’s 2×2 test this is generally conservative,
+fisher_two_sided_approx <- function(a, sx, sy, n) {
+  p_hi <- phyper(a - 1, sy, n - sy, sx, lower.tail = FALSE)
+  p_lo <- phyper(a,     sy, n - sy, sx, lower.tail = TRUE)
+  p <- 2 * pmin(p_hi, p_lo)
+  p[p > 1] <- 1
+  p
+}
+
+
+tcr_names <- colnames(tcr2)
+mut_names <- colnames(mut)
+
+TOP_N <- NA   # change to NA to keep all (memory heavy)
+
+res_list <- vector("list", length(mut_names))
+
+sx <- Matrix::colSums(tcr2)  # #patients carrying each TCR
+n <- nrow(tcr2)
+
+for (j in seq_along(mut_names)) {
+  y <- as.numeric(mut[, j])
+  sy <- sum(y)
+
+  # a = co-occurrence counts for all TCRs with this mutation
+  a <- as.numeric(Matrix::crossprod(tcr2, y))  # length = #TCRs
+  # Build 2x2 margins
+  b <- sx - a
+  c <- sy - a
+  d <- n - a - b - c
+
+  # Drop degenerate tables (any margin zero)
+  ok <- (sx > 0 & sx < n & sy > 0 & sy < n)
+  a <- a[ok]; b <- b[ok]; c <- c[ok]; d <- d[ok]
+  sx_ok <- sx[ok]; tnames <- tcr_names[ok]
+
+  if (!length(a)) { res_list[[j]] <- data.table(); next }
+
+  # Odds ratio (Haldane–Anscombe)
+  or <- ((a + 0.5) * (d + 0.5)) / ((b + 0.5) * (c + 0.5))
+
+  # Fast two-sided p (approx)
+  p_fast <- fisher_two_sided_approx(a, sx_ok, sy, n)
+
+  dt <- data.table(
+    mutation = mut_names[j],
+    tcr = tnames,
+    TCR_and_mut = a, TCR_only = b, mut_only = c, neither = d,
+    or = or,
+    p_fast = p_fast
+  )
+  
+  # Keep top-N per mutation (by p_fast) to stay light; remove to keep all
+  if (!is.na(TOP_N) && nrow(dt) > TOP_N) {
+    setorder(dt, p_fast)
+    dt <- dt[1:TOP_N]
+  }
+
+  # Calculate the exact Fisher for accuracy
+  dt[, p_exact := NA_real_]
+  
+  w_indx = which(dt$p_fast < 0.05)
+  for(idx in w_indx){
+    m = matrix(c(dt$TCR_and_mut[idx], dt$TCR_only[idx], 
+                 dt$mut_only[idx], dt$neither[idx]), 
+                2, byrow = TRUE)
+    dt$p_exact[idx] = fisher.test(m, alternative = "two.sided")$p.value
+  }
+
+  res_list[[j]] <- dt
+}
+
+assoc <- rbindlist(res_list, use.names = TRUE, fill = TRUE)
+setorder(assoc, p_fast)
+
+```
+
+## Check results:
+```{r fig.width = 4, fig.height = 4}
+dim(assoc)
+head(assoc)
+summary(assoc$p_fast)
+summary(assoc$p_exact)
+
+assoc[, chain := fifelse(grepl("_A$", tcr), "alpha", 
+                         fifelse(grepl("_B$", tcr), "beta", NA_character_))]
+
+counts <- assoc[p_fast < 0.05, .N, by = chain]
+counts
+
+counts <- assoc[p_fast < 0.01, .N, by = chain]
+counts
+
+yr <- range(-log10(assoc$p_fast), finite = TRUE)
+yr
+yr = c(0, 5)
+xr = yr
+
+ggplot(assoc, aes(x = -log10(p_exact), y = -log10(p_fast))) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  scale_x_continuous(limits = xr) +
+  scale_y_continuous(limits = yr) +
+  labs(
+    x = expression(-log[10](p[exact])),
+    y = expression(-log[10](p[fast])),
+    title = "Comparison of fast vs. exact Fisher p-values"
+  ) +
+  theme_minimal()
+
+max_p_by_mut <- assoc[, .(max_p = max(p_exact, na.rm = TRUE)), 
+                      by = mutation][order(max_p)]
+
+dim(max_p_by_mut)
+max_p_by_mut[1:10,]
+
+max_p_by_mut = max_p_by_mut |> filter(max_p > -Inf)
+```
+
+## Load & format TCGA somatic mutation vs. TCR associations
+
+```{r}
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+res_A = fread(file.path(result_dir, "TCR_alpha_mut_asso_rd_x_with_ct.tsv"))
+res_B = fread(file.path(result_dir, "TCR_beta_mut_asso_rd_x_with_ct.tsv"))
+
+dim(res_A)
+res_A[1:2,]
+
+w1 = which(names(res_A) == "overlap_grp") + 1
+p_ct_max = apply(res_A[,w1:ncol(res_A)], 1, max)
+
+w2kp = (p_ct_max <= 10*res_A$pval_LRT)
+table(w2kp)
+
+res_A = res_A[w2kp,]
+dim(res_A)
+
+dim(res_B)
+res_B[1:2,]
+
+w1 = which(names(res_A) == "overlap_grp") + 1
+p_ct_max = apply(res_B[,w1:ncol(res_B)], 1, max)
+
+w2kp = (p_ct_max <= 10*res_B$pval_LRT)
+table(w2kp)
+
+res_B = res_B[w2kp,]
+dim(res_B)
+
+summary(res_B$pval_LRT)
+```
+
+```{r}
+names(res_A)
+names(res_B)
+res_A = res_A[,1:13]
+res_B = res_B[,1:13]
+
+dim(res_B)
+res_B[1:2,]
+
+# Format TCGA prediction results
+format_TCGA_mut_id_v1 <- function(x) {
+  tmp = strsplit(x, ':')
+  stopifnot(all(sapply(tmp, length) == 5))
+  mat <- do.call(rbind, tmp)  
+  if (!is.null(names(tmp[[1]]))) colnames(mat) <- names(tmp[[1]])
+
+  gene = mat[,1]
+  chr = mat[,2]
+  loc = mat[,3]
+  ref = mat[,4]
+  alt = mat[,5]
+  id = paste0('chr', chr, ':', loc, '-', loc, ':', ref, '->', alt, ':', gene)
+  return(id)
+}
+
+res_A$TCR = paste0(res_A$TCR, '_A')
+res_B$TCR = paste0(res_B$TCR, '_B')
+
+res_A$mut = format_TCGA_mut_id_v1(res_A$mut)
+res_B$mut = format_TCGA_mut_id_v1(res_B$mut)
+
+assoc[,key := paste(mutation, tcr, sep="_")]
+res_A[,key := paste(mut, TCR, sep="_")]
+res_B[,key := paste(mut, TCR, sep="_")]
+
+table(assoc$key %in% res_A$key)
+table(assoc$key %in% res_B$key)
+
+table(assoc$mutation %in% res_A$mut)
+```
+
+## Check the correlation of association p-values
+
+```{r}
+
+df_A = merge(assoc, res_A, by = "key")
+dim(df_A)
+df_A[1:5,]
+
+df_B = merge(assoc, res_B, by = "key")
+dim(df_B)
+df_B[1:5,]
+
+for(idx in 1:nrow(df_A)){
+    m = matrix(c(df_A$TCR_and_mut[idx], df_A$TCR_only[idx], 
+                 df_A$mut_only[idx], df_A$neither[idx]), 2, byrow = TRUE)
+    df_A$p_exact[idx] = fisher.test(m, alternative = "two.sided")$p.value
+}
+
+for(idx in 1:nrow(df_B)){
+    m = matrix(c(df_B$TCR_and_mut[idx], df_B$TCR_only[idx], 
+                 df_B$mut_only[idx], df_B$neither[idx]), 2, byrow = TRUE)
+    df_B$p_exact[idx] = fisher.test(m, alternative = "two.sided")$p.value
+}
+
+
+dim(df_A)
+df_A[1:5,]
+
+dim(df_B)
+df_B[1:5,]
+
+ggplot(df_A, aes(x = -log10(p_exact), y = -log10(pval_LRT))) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    x = expression(-log[10](p[TRACERx])),
+    y = expression(-log[10](p[TCGA])),
+    title = "Alpha chain: TRACERx vs. TCGA"
+  ) +
+  theme_minimal()
+
+ggplot(df_B, aes(x = -log10(p_exact), y = -log10(pval_LRT))) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    x = expression(-log[10](p[TRACERx])),
+    y = expression(-log[10](p[TCGA])),
+    title = "beta chain: TRACERx vs. TCGA"
+  ) +
+  theme_minimal()
+
+cor.test(df_A$p_exact, df_A$pval_LRT, method = "spearman")
+cor.test(df_B$p_exact, df_B$pval_LRT, method = "spearman")
+
+df_A = df_A[p_exact < 0.99]
+dim(df_A)
+df_A[1:5,]
+
+df_B = df_B[p_exact <  0.99]
+dim(df_B)
+df_B[1:5,]
+
+ggplot(df_A, aes(x = -log10(p_exact), y = -log10(pval_LRT))) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    x = expression(-log[10](p[TRACERx])),
+    y = expression(-log[10](p[TCGA])),
+    title = "Alpha chain: TRACERx vs. TCGA"
+  ) +
+  theme_minimal()
+
+ggplot(df_B, aes(x = -log10(p_exact), y = -log10(pval_LRT))) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    x = expression(-log[10](p[TRACERx])),
+    y = expression(-log[10](p[TCGA])),
+    title = "beta chain: TRACERx vs. TCGA"
+  ) +
+  theme_minimal()
+
+cor.test(df_A$p_exact, df_A$pval_LRT, method = "spearman")
+cor.test(df_B$p_exact, df_B$pval_LRT, method = "spearman")
+
+df_A[p_exact < 0.05 & pval_LRT < 0.05]
+df_B[p_exact < 0.05 & pval_LRT < 0.05]
+
+```
+
+## Load & format TCGA predictors
+
+```{r}
+# Format TCGA prediction results
+format_TCGA_mut_id <- function(x) {
+  tmp = strsplit(x, ':')[[1]]
+  gene = tmp[1]
+  chr = tmp[2]
+  loc = tmp[3]
+  ref = tmp[4]
+  alt = tmp[5]
+  id = paste0('chr', chr, ':', loc, '-', loc, ':', ref, '->', alt, ':', gene)
+  return(id)
+}
+
+# Load TCGA predictors & AUC
+tcga_dir = "~/research/data/TCR/TCGA/_results"
+
+fnm = file.path(tcga_dir, 'TCGA_res_TCR_predictors_pval_5.0e-02.rds')
+predictors_tcga = readRDS(fnm)
+
+auc_tcga = read.table(file.path(tcga_dir, 'TCGA_res_AUC_pval_5.0e-02.tsv'), 
+                      sep="\t", header = TRUE)
+
+length(predictors_tcga)
+names(predictors_tcga)[1:5]
+predictors_tcga[[1]]
+
+dim(auc_tcga)
+auc_tcga[1:5,]
+
+setequal(names(predictors_tcga), auc_tcga$mut)
+
+# Format predictor list
+names(predictors_tcga) = sapply(names(predictors_tcga), format_TCGA_mut_id)
+
+predictors_tcga = lapply(predictors_tcga, function(x) {
+  new = list(alpha = paste0(x$TCRA, '_A'), beta = paste0(x$TCRB, '_B'))
+  new$both = c(new$alpha, new$beta)
+  return(new)
+})
+
+length(predictors_tcga)
+names(predictors_tcga)[1:5]
+predictors_tcga[[1]]
+
+# Format AUC
+auc_tcga$mut = sapply(auc_tcga$mut, format_TCGA_mut_id)
+
+dim(auc_tcga)
+auc_tcga[1:5,]
+```
+
+## Apply TCGA predictors to TRACERx data
+
+```{r Apply TCGA predictors to TRACERx data}
+calc_auc <- function(predl, mut, tcr) {
+  
+  .calc_auc <- function(y, tcr, ids) {
+    if (length(ids) == 0) return(NA)
+    x = rowSums(as.matrix(tcr[, ids])) # tumors x tcrs matrix
+    as.numeric(pROC::auc(response = y, predictor = x, quiet = T, direction = "<"))
+  }
+  
+  muts = intersect(names(predl), colnames(mut))
+  tcrs = colnames(tcr)
+  auc = NULL
+  for (mut_id in muts) {
+    y = mut[, mut_id] > 0
+    
+    tcr_ids = intersect(predl[[mut_id]]$both, tcrs)
+    alpha_ids = intersect(predl[[mut_id]]$alpha, tcrs)
+    beta_ids = intersect(predl[[mut_id]]$beta, tcrs)
+    
+    auc_both = .calc_auc(y, tcr, tcr_ids)
+    auc_alpha = .calc_auc(y, tcr, alpha_ids)
+    auc_beta = .calc_auc(y, tcr, beta_ids)
+    
+    new = tibble(mut = mut_id, n_alpha = length(alpha_ids), n_beta = length(beta_ids), 
+                 auc_alpha = auc_alpha, auc_beta = auc_beta, auc_both = auc_both)
+    auc = bind_rows(auc, new)
+  }
+  
+  return(auc)
+}
+
+# Apply predictors
+auc_applied = calc_auc(predictors_tcga, mut, tcr)
+
+# Combine results
+auc_tcga_vs_applied = auc_tcga %>% inner_join(auc_applied, by = 'mut', 
+                                              suffix = c('_TCGA', '_applied_to_Tracerx'))
+
+# Add the number of tumors where a mutation appears
+auc_tcga_vs_applied$ntumor = colSums(mut[, auc_tcga_vs_applied$mut] > 0)
+table(auc_tcga_vs_applied$ntumor)
+
+dim(auc_tcga_vs_applied)
+auc_tcga_vs_applied[1:2,]
+```
+
+## Summary
+
+```{r}
+# Number of mutations
+nrow(auc_tcga_vs_applied)
+
+# Number of alpha chain TCR predictors in TCGA
+summary(auc_tcga_vs_applied$n_alpha_TCGA)
+
+# Number of alpha chain TCR predictors when applied to Tracerx
+summary(auc_tcga_vs_applied$n_alpha_applied_to_Tracerx)
+
+# Number of beta chain TCR predictors in TCGA
+summary(auc_tcga_vs_applied$n_beta_TCGA)
+
+# Number of beta chain TCR predictors when applied to Tracerx
+summary(auc_tcga_vs_applied$n_beta_applied_to_Tracerx)
+```
+
+## Plot AUC
+
+```{r Plot AUC alpha, fig.width=5, fig.height=3.5}
+
+df_plot <- auc_tcga_vs_applied %>% subset(n_alpha_applied_to_Tracerx > 1)
+
+# AUC when aggregating predictors on alpha chain
+cor_res <- cor.test(df_plot$auc_alpha_TCGA, 
+                    df_plot$auc_alpha_applied_to_Tracerx, 
+                    method = "pearson")
+
+cor_text <- sprintf("r = %.3f, p = %.2g", cor_res$estimate, cor_res$p.value)
+
+ggplot(
+  df_plot,
+  aes(auc_alpha_TCGA, auc_alpha_applied_to_Tracerx, size = ntumor)
+) +
+  geom_point(color = "orange", alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, color = 'seagreen') +
+  xlim(0, 1) + ylim(0, 1) +
+  geom_hline(yintercept = 0.5, color = 'seagreen', linetype = 2) +
+  geom_vline(xintercept = 0.5, color = 'seagreen', linetype = 2) +
+  labs(
+    x = 'AUC in TCGA',
+    y = 'AUC when applied to Tracerx',
+    title = 'alpha chain',
+    subtitle = cor_text,                  # correlation info here
+    size = "# of mutation carriers"        # legend title
+  ) +
+  scale_size(
+    range = c(2, 4), 
+    breaks = c(2, 4, 8)
+  ) +
+  ggpubr::theme_pubr() + 
+  theme(legend.position = "right")
+```
+
+```{r Plot AUC beta, fig.width=5, fig.height=3.5}
+
+# AUC when aggregating predictors on beta chain
+
+df_plot <- auc_tcga_vs_applied %>% subset(n_beta_applied_to_Tracerx > 1)
+
+df_plot %>% subset(ntumor > 5 & n_beta_applied_to_Tracerx > 2)
+
+cor_res <- cor.test(df_plot$auc_beta_TCGA, 
+                    df_plot$auc_beta_applied_to_Tracerx, 
+                    method = "pearson")
+
+cor_text <- sprintf("r = %.3f, p = %.2g", cor_res$estimate, cor_res$p.value)
+
+ggplot(
+  df_plot,
+  aes(auc_beta_TCGA, auc_beta_applied_to_Tracerx, size = ntumor)
+) +
+  geom_point(color = "orange", alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, color = 'seagreen') +
+  xlim(0, 1) + ylim(0, 1) +
+  geom_hline(yintercept = 0.5, color = 'seagreen', linetype = 2) +
+  geom_vline(xintercept = 0.5, color = 'seagreen', linetype = 2) +
+  labs(
+    x = 'AUC in TCGA',
+    y = 'AUC when applied to Tracerx',
+    title = 'beta chain',
+    subtitle = cor_text,                  # correlation info here
+    size = "# of mutation carriers"        # legend title
+  ) +
+  scale_size(
+    range = c(2, 4), 
+    breaks = c(2, 4, 8)
+  ) +
+  ggpubr::theme_pubr() + 
+  theme(legend.position = "right")
+```
+
+
+```{r Plot AUC both, fig.width=5, fig.height=3.5}
+# AUC when aggregating predictors on both chain
+df_plot <- auc_tcga_vs_applied %>% 
+  subset(n_alpha_applied_to_Tracerx + n_beta_applied_to_Tracerx > 1)
+
+cor_res <- cor.test(df_plot$auc_both_TCGA, 
+                    df_plot$auc_both_applied_to_Tracerx, 
+                    method = "pearson")
+
+cor_text <- sprintf("r = %.3f, p = %.2g", cor_res$estimate, cor_res$p.value)
+
+ggplot(
+  df_plot,
+  aes(auc_both_TCGA, auc_both_applied_to_Tracerx, size = ntumor)
+) +
+  geom_point(color = "orange", alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, color = 'seagreen') +
+  xlim(0, 1) + ylim(0, 1) +
+  geom_hline(yintercept = 0.5, color = 'seagreen', linetype = 2) +
+  geom_vline(xintercept = 0.5, color = 'seagreen', linetype = 2) +
+  labs(
+    x = 'AUC in TCGA',
+    y = 'AUC when applied to Tracerx',
+    title = 'both chain',
+    subtitle = cor_text,                  # correlation info here
+    size = "# of mutation carriers"        # legend title
+  ) +
+  scale_size(
+    range = c(2, 4), 
+    breaks = c(2, 4, 8)
+  ) +
+  ggpubr::theme_pubr() + 
+  theme(legend.position = "right")
+```
+
+## Save
+
+```{r Save}
+saveRDS(auc_tcga_vs_applied, file = 'results/auc_tcga_vs_applied.rds')
+```
+
+```{r}
+sessionInfo()
+```

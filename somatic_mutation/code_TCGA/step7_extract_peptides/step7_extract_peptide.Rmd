@@ -1,0 +1,361 @@
+---
+title: "Extract amino acid sequence of the transcripts that harbor the somatic mutations"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+Extract amino acid sequence of the transcripts that harbor the somatic mutations that appear at least 5 times in the TCGA samples. 
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(ggrepel)
+library(biomaRt)
+library(Biostrings)
+library(GenomicRanges)
+
+theme_set(theme_classic())
+
+data_dir   = "~/research/data/TCR/TCGA"
+result_dir = "~/research/data/TCR/TCGA/_results"
+```
+
+# Read in data
+
+
+## Load association results
+
+```{r fig.width=5, fig.height=4}
+res_A = fread(file.path(result_dir, "TCR_alpha_mut_asso_rd_x_with_ct.tsv"))
+res_B = fread(file.path(result_dir, "TCR_beta_mut_asso_rd_x_with_ct.tsv"))
+
+dim(res_A)
+res_A[1:2,]
+
+summary(res_A$pval_LRT)
+
+w1 = which(names(res_A) == "overlap_grp") + 1
+p_ct_max = apply(res_A[,w1:ncol(res_A)], 1, max)
+
+w2kp = (p_ct_max <= 10*res_A$pval_LRT)
+table(w2kp)
+
+res_A = res_A[w2kp,]
+dim(res_A)
+
+w1 = which(names(res_B) == "overlap_grp") + 1
+p_ct_max = apply(res_B[,w1:ncol(res_B)], 1, max)
+
+w2kp = (p_ct_max <= 10*res_B$pval_LRT)
+table(w2kp)
+
+res_B = res_B[w2kp,]
+dim(res_B)
+
+tA = table(res_A$mut)
+tB = table(res_B$mut)
+
+length(tA)
+length(tB)
+length(union(names(tA), names(tB)))
+
+muts_A = res_A[, .(min_pval_A = min(pval_LRT)), by = mut]
+muts_B = res_B[, .(min_pval_B = min(pval_LRT)), by = mut]
+
+dim(muts_A)
+muts_A[1:2,]
+
+dim(muts_B)
+muts_B[1:2,]
+
+muts_AB = merge(muts_A, muts_B, all = TRUE)
+dim(muts_AB)
+muts_AB[1:2,]
+
+summary(muts_AB)
+muts_AB$min_pval_A[is.na(muts_AB$min_pval_A)] = 0.2
+muts_AB$min_pval_B[is.na(muts_AB$min_pval_B)] = 0.2
+
+ggplot(muts_AB, mapping = aes(x = -log10(min_pval_A), y = -log10(min_pval_B))) +
+  geom_pointdensity() +
+  scale_color_viridis()
+
+cor.test(muts_AB$min_pval_A, muts_AB$min_pval_B, method="spearman")
+
+table(muts_AB$min_pval_A < 0.001, muts_AB$min_pval_B < 0.001)
+muts_AB$min_pval = pmin(muts_AB$min_pval_A, muts_AB$min_pval_B, na.rm = TRUE)
+table(muts_AB$min_pval < 0.001)
+```
+
+## Read in somatic mutation data
+
+```{r}
+mutation_file = "mc3.v0.2.8.CONTROLLED.maf.gz"
+
+mut_dat = fread(file.path(data_dir, mutation_file), 
+                select = c("Hugo_Symbol", "NCBI_Build", "Chromosome", "Strand", 
+                           "Start_Position", "End_Position", "Reference_Allele", 
+                           "Tumor_Seq_Allele1", "Tumor_Seq_Allele2", 
+                           "Tumor_Sample_Barcode", 
+                           "Variant_Classification", "Variant_Type", 
+                           "Feature", "Feature_type", "Consequence", 
+                           "HGVSc", "HGVSp_Short", "Transcript_ID"))
+dim(mut_dat)
+mut_dat[1:2,]
+
+mut_dat$participant = substr(mut_dat$Tumor_Sample_Barcode, 1, 12)
+
+table(mut_dat$Reference_Allele == mut_dat$Tumor_Seq_Allele1)
+table(mut_dat$Reference_Allele == mut_dat$Tumor_Seq_Allele2)
+
+mut_dat[,pos:=paste(Chromosome, Start_Position, sep=":")]
+mut_dat[,key:=paste(Hugo_Symbol, pos, Reference_Allele, Tumor_Seq_Allele2, sep=":")]
+
+mut5 = fread(file.path(data_dir, "_processed_data/mutation_freq_geq_5.tsv"))
+dim(mut5)
+mut5[1:2,]
+
+table(mut5$key %in% mut_dat$key)
+
+mut_dat = mut_dat[mut_dat$key %in% mut5$key]
+dim(mut_dat)
+mut_dat[1:2,]
+```
+
+## Select mutations with similar population frequency as the TCR assocaited mutations 
+
+```{r fig.width=4, fig.height=3}
+unique_muts = unique(mut_dat[,.(key, Variant_Classification, participant)])
+dim(unique_muts)
+unique_muts[1:5,]
+
+mut_info = unique_muts[, .(n=.N), by = .(key, Variant_Classification)]
+mut_info = mut_info[order(-n)]
+dim(mut_info)
+mut_info[1:20,]
+
+names(muts_AB)[1] = "key"
+dim(muts_AB)
+muts_AB[1:2,]
+
+table(muts_AB$key %in% mut_info$key)
+
+mut_info[,asso_TCR := key %in% muts_AB$key]
+
+mut_info = merge(mut_info, muts_AB, all.x = TRUE)
+dim(mut_info)
+mut_info[1:2,]
+
+table(mut_info$asso_TCR, is.na(mut_info$min_pval))
+
+summary(mut_info$min_pval)
+table(mut_info$min_pval < 0.001)
+
+mut_info$group = "No"
+mut_info$group[which(mut_info$min_pval < 0.001)] = "Strong"
+mut_info$group[which(mut_info$min_pval >= 0.001)] = "Weak"
+
+table(mut_info$group)
+
+tapply(mut_info$n, mut_info$group, table)
+
+mut_info$n_group = cut(mut_info$n, breaks = c(4.5, 5.5, 6.5, 10.5, 20.5, 50.5, Inf),
+                      labels = c("5", "6", "7-10", "11-20", "21-50", ">50"))
+
+ggplot(mut_info, aes(x = group, fill = n_group)) +
+    geom_bar(position = "fill") + scale_fill_brewer(palette = "Dark2")
+```
+
+
+## Check those matched mutations 
+
+```{r}
+mut_dat = mut_dat[match(mut_info$key, mut_dat$key),]
+dim(mut_dat)
+mut_dat[1:2,]
+
+mut_dat = merge(mut_dat, mut_info)
+dim(mut_dat)
+mut_dat[1:2,]
+
+table(mut_dat$asso_TCR, mut_dat$group)
+
+table(mut_dat$Feature == mut_dat$Transcript_ID)
+table(mut_dat$NCBI_Build)
+tapply(mut_dat$Variant_Classification, mut_info$asso_TCR, table)
+
+table(mut_dat$Variant_Classification, mut_dat$Variant_Type)
+
+fwrite(mut_dat, file.path(result_dir, "step7_mutations.tsv"), sep="\t")
+```
+
+# Extract amino acid sequence
+
+## First test the version of Ensembl to use
+
+After checking all the URLs from 2019, https://grch37.ensembl.org is the only one that give the BRAF V600E correct annoation. 
+
+Not runing this code here since it oftens has error of operation timed out.
+
+```{r}
+mut_dat[Hugo_Symbol == "TP53",][1:2,]
+mut_dat[Hugo_Symbol == "BRAF",][1:2,]
+
+# since the mutations were annotated around 2019
+# we should use an archived version of ensembl
+
+urls  = listEnsemblArchives()$url[c(1,3, 17:18)]
+urls
+wt_aa  = len_aa = NULL
+wt_cdna  = len_cdna = NULL
+
+for(i in 1:length(urls)){
+  u1 = urls[i]
+  ensembl = useMart("ensembl", dataset="hsapiens_gene_ensembl", 
+                    host=u1)
+  
+  enst = c("ENST00000269305", "ENST00000288602")
+  seq_i = getSequence(id=enst, 
+                      type="ensembl_transcript_id",
+                      seqType="peptide", mart=ensembl)
+  
+  dna_i = getSequence(id=enst, 
+                      type="ensembl_transcript_id",
+                      seqType="coding", mart=ensembl)
+
+  stopifnot(all(seq_i$ensembl_transcript_id == enst))
+  stopifnot(all(dna_i$ensembl_transcript_id == enst))
+
+  len_aa_i = nchar(seq_i$peptide)
+  len_cdna_i = nchar(dna_i$coding)
+  
+  aa_t = translate(DNAStringSet(dna_i$coding))
+  aa_t = as.character(aa_t)
+  
+  stopifnot(all(aa_t == seq_i$peptide))
+  
+  wt_aa_i  = rep(NA, 2)
+  wt_aa_i[1]  = substr(seq_i$peptide[1], 343, 343)
+  wt_aa_i[2]  = substr(seq_i$peptide[2], 600, 600)
+  
+  wt_cdna_i  = rep(NA, 2)
+
+  wt_cdna_i[1]  = substr(dna_i$coding[1], 1027, 1027)
+  wt_cdna_i[2]  = substr(dna_i$coding[2], 1799, 1799)
+
+  wt_aa  = rbind(wt_aa, wt_aa_i)
+  len_aa = rbind(len_aa, len_aa_i)
+  
+  wt_cdna  = rbind(wt_cdna, wt_cdna_i)
+  len_cdna = rbind(len_cdna, len_cdna_i)
+}
+
+cbind(wt_aa, len_aa, wt_cdna, len_cdna, urls)
+
+## wt_aa_i "E" "V" "394" "767" "G" "T" "1182" "2301"
+## wt_aa_i "E" "T" "394" "807" "G" "C" "1182" "2421"
+## wt_aa_i "E" "T" "394" "807" "G" "C" "1182" "2421"
+## wt_aa_i "E" "T" "394" "807" "G" "C" "1182" "2421"
+##         urls                                 
+## wt_aa_i "https://grch37.ensembl.org"         
+## wt_aa_i "https://jul2023.archive.ensembl.org"
+## wt_aa_i "https://apr2019.archive.ensembl.org"
+## wt_aa_i "https://jan2019.archive.ensembl.org"
+```
+
+## Extract AA sequences
+
+Extract AA sequence for 1000 transcripts each time.
+
+```{r}
+dim(mut_dat)
+mut_dat[1:2,]
+
+t_transcript = table(mut_dat$Transcript_ID)
+length(t_transcript)
+table(t_transcript)
+
+x = sort(t_transcript, decreasing = TRUE)
+df1 = data.frame(x, mut_dat$Hugo_Symbol[match(names(x), mut_dat$Transcript_ID)])
+names(df1) = c("transcript", "freq", "gene")
+dim(df1)
+df1[1:20,]
+
+table(table(df1$gene))
+sort(table(df1$gene), decreasing = TRUE)[1:6]
+
+starts = seq(1, nrow(df1), by=100)
+ends = c(seq(100, nrow(df1), by=100), nrow(df1))
+
+cbind(starts, ends)
+
+peptide = coding = NULL
+
+ensembl = useMart("ensembl", dataset="hsapiens_gene_ensembl", 
+                  host="https://grch37.ensembl.org")
+
+for(i in 1:length(starts)){
+  cat(i, date(), "\n")
+  est = df1$transcript[starts[i]:ends[i]]
+  
+  seq_i = getSequence(id=est, type="ensembl_transcript_id", 
+                      seqType="peptide", mart=ensembl)
+  
+  dna_i = getSequence(id=est, type="ensembl_transcript_id", 
+                      seqType="coding", mart=ensembl)
+
+  stopifnot(setequal(est, seq_i$ensembl_transcript_id))
+  stopifnot(setequal(est, dna_i$ensembl_transcript_id))
+
+  seq_i = seq_i[match(est, seq_i$ensembl_transcript_id),]
+  dna_i = dna_i[match(est, dna_i$ensembl_transcript_id),]
+  
+  peptide = rbind(peptide, seq_i)
+  coding  = rbind(coding, dna_i)
+}
+
+dim(peptide)
+peptide[1:2,]
+
+dim(coding)
+coding[1:2,]
+
+peptide = data.frame(peptide)
+names(peptide)[2] = "transcript"
+
+coding = data.frame(coding)
+names(coding)[2] = "transcript"
+
+df2 = merge(df1, peptide)
+dim(df2)
+df2[1:2,]
+
+df2 = merge(df2, coding)
+dim(df2)
+df2[1:2,]
+
+fwrite(df2, file.path(result_dir, "step7_peptide_seq.tsv"), sep="\t")
+```
+
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

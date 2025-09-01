@@ -1,0 +1,227 @@
+---
+title: "Extract somatic mutation and TCR data from Zheng et al."
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(pROC)
+library(ROCR)
+library(ggrepel)
+library(immunarch)
+theme_set(theme_classic())
+
+data_dir   = "~/research/data/TCR/TCGA/_processed_data"
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+TCR_dir = "../../data_gene_expression_signature/Zheng_2021_processed"
+```
+
+# Read in data
+
+## read mutation information
+```{r fig.width=5, fig.height=3}
+mut_info = fread("../data/GSE156728_bulk_Exome.mutation.txt.gz")
+dim(mut_info)
+mut_info[1:2,1:21]
+
+tp = table(mut_info$patient)
+tp = as.data.frame(tp)
+names(tp) = c("patient", "mutation_freq")
+tp = cbind(tp, str_split_fixed(tp$patient, "\\.", n=2))
+names(tp)[3:4] = c("cancer_type", "patient_id")
+dim(tp)
+tp[1:5,]
+
+table(tp$cancer_type)
+
+ggplot(tp, aes(x= cancer_type, y = log10(mutation_freq), fill=cancer_type)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) + 
+  geom_jitter(width = 0.2, alpha = 0.8) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+mut_info[,key:=paste(Gene, CHROM, POS, REF, ALT, sep=":")]
+
+tm = table(mut_info$key)
+length(tm)
+table(tm)
+sort(tm, decreasing = TRUE)[1:10]
+
+tg = table(mut_info$Gene)
+length(tg)
+table(tg)
+sort(tg, decreasing = TRUE)[1:20]
+```
+
+## Match patient information
+
+Obtain library ID of each patient. 
+
+```{r}
+sam_info = fread(file.path(TCR_dir, "../Zheng_2021/GSE156728", 
+                           "GSE156728_metadata.txt.gz"))
+dim(sam_info)
+sam_info[1:2,]
+
+table(sam_info$loc)
+table(sam_info$platform)
+sam_info = sam_info[sam_info$loc == "T" & sam_info$platform == "10X",]
+
+tb_patient_cell = table(sam_info$patient)
+length(tb_patient_cell)
+summary(as.numeric(tb_patient_cell))
+
+table(tp$patient %in% sam_info$patient)
+
+sam_lib = unique(sam_info[,c("cancerType", "patient", "libraryID", "platform")])
+dim(sam_lib)
+
+sam_lib = sam_lib[sam_lib$patient %in% tp$patient,]
+dim(sam_lib)
+sam_lib[1:2,]
+
+table(sam_lib$cancerType)
+table(table(sam_lib$patient))
+```
+
+
+## Construct mutation data matirx
+
+```{r}
+tb_mut = table(mut_info$key)
+length(tb_mut)
+sort(tb_mut, decreasing = TRUE)[1:9]
+
+table(tb_mut > 1)
+
+dim(mut_info)
+mut_info[1:2,c(1:10,77)]
+mut_info$value = 1
+
+mut_mat = reshape2::acast(mut_info, key ~ patient, value.var="value", 
+                         fun.aggregate=sum, drop=FALSE)
+dim(mut_mat)
+mut_mat[1:2,1:3]
+table(c(mut_mat))
+
+colnames(mut_mat) = gsub(".", "-", colnames(mut_mat), fixed = TRUE)
+colnames(mut_mat) = paste0(colnames(mut_mat), "-T")
+mut_mat[1:2,1:5]
+```
+
+
+## Read in TCR data
+```{r message = FALSE, warning=FALSE}
+tcr = fread(file.path(TCR_dir, "TCR.txt.gz"))
+
+dim(tcr)
+tcr[1:2,]
+
+table(sam_lib$libraryID %in% tcr$library.id)
+table(tcr$library.id %in% sam_lib$libraryID)
+
+tcr = tcr[library.id %in% sam_lib$libraryID,]
+dim(tcr)
+```
+
+## Prepare TCR data matrix
+
+```{r}
+dim(tcr)
+tcr[1:2,]
+
+tcr[,key_tcr:=paste(CDR3, library.id, sep=":")]
+t_key = table(tcr$key_tcr)
+summary(as.numeric(t_key))
+
+sort(t_key, decreasing=TRUE)[1:5]
+tcr[key_tcr == "CAVIRTGANNLFF:CSVEGGASYEQYF:RC-P20190923-T",][1:5,]
+
+table(is.na(tcr$cdr3_alpha), is.na(tcr$cdr3_beta))
+table(tcr$cdr3_alpha == "", tcr$cdr3_beta == "")
+
+tcr$value = 1
+
+TA_mat = reshape2::acast(tcr, cdr3_alpha ~ library.id, value.var="value", 
+                         fun.aggregate=sum)
+TB_mat = reshape2::acast(tcr, cdr3_beta ~ library.id, value.var="value", 
+                         fun.aggregate=sum)
+
+dim(TA_mat)
+TA_mat[1:2,1:3]
+TA_mat["CAVIRTGANNLFF", "RC-P20190923-T"]
+summary(c(TA_mat))
+
+dim(TB_mat)
+TB_mat[1:2,1:3]
+summary(c(TB_mat))
+
+stopifnot(all(colnames(TA_mat) == colnames(TB_mat)))
+```
+
+## Write out data
+```{r}
+table(colnames(TA_mat) %in% colnames(mut_mat))
+mut_mat = mut_mat[,match(colnames(TA_mat), colnames(mut_mat))]
+
+mut_dt = data.table(mutation=rownames(mut_mat), mut_mat)
+dim(mut_dt)
+mut_dt[1:2,1:3]
+
+fwrite(mut_dt, "../data/mut_dat_matrix.tsv", sep="\t")
+
+TA_dt = data.table(TCR=rownames(TA_mat), TA_mat)
+dim(TA_dt)
+TA_dt[1:2,1:3]
+
+fwrite(TA_dt, "../data/TCR_alpha_dat_matrix.tsv", sep="\t")
+
+TB_dt = data.table(TCR=rownames(TB_mat), TB_mat)
+dim(TB_dt)
+TB_dt[1:2,1:3]
+
+fwrite(TB_dt, "../data/TCR_beta_dat_matrix.tsv", sep="\t")
+
+```
+
+
+## redraw 
+```{r fig.width=3, fig.height=2.7}
+dim(tp)
+tp[1:5,]
+
+patients = str_remove(names(mut_dt)[-1], "-T$")
+patients = gsub("-", ".", patients)
+table(tp$patient %in% patients)
+tp = tp[tp$patient %in% patients,]
+
+ggplot(tp, aes(x= cancer_type, y = log10(mutation_freq), fill=cancer_type)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) + 
+  geom_jitter(width = 0.2, alpha = 0.8) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  xlab("Cancer Type") + ylab("log10(mutation burden)") + 
+  theme(legend.position = "none")
+```
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

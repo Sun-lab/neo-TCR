@@ -1,0 +1,596 @@
+---
+title: "Summarize the cross validation results"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## R library
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(ggExtra)
+
+library(viridis)
+library(pROC)
+library(stringr)
+library(reshape2)
+library(ggvenn)
+library(flextable)
+library(knitr)
+library(ggrepel)
+
+theme_set(theme_classic())
+ 
+data_dir = "~/research/data/TCR/TCGA/_processed_data"
+res_dir  = "~/research/data/TCR/TCGA/_results/_cross_validation"
+```
+
+# Summrize results
+
+## Read in data
+```{r fig.width=3, fig.height=4}
+res_alpha = fread(file.path(res_dir, "cross_validation_res_alpha.tsv"))
+res_beta  = fread(file.path(res_dir, "cross_validation_res_beta.tsv"))
+res_both  = fread(file.path(res_dir, "cross_validation_res_both.tsv"))
+
+dim(res_alpha)
+dim(res_beta)
+dim(res_both)
+
+res_alpha[1:2,]
+res_beta[1:2,]
+res_both[1:2,]
+
+```
+
+
+```{r}
+table(res_alpha$auc > 0.55)
+table(res_beta$auc > 0.55)
+table(res_both$auc > 0.55)
+
+table(res_alpha$auc > 0.6)
+table(res_beta$auc > 0.6)
+table(res_both$auc > 0.6)
+
+res_alpha = res_alpha[auc > 0.6,]
+res_beta = res_beta[auc > 0.6,]
+res_both = res_both[auc > 0.6,]
+
+str1 = "LZTR1:22:21343966:GAGGAGGTGAGGGGCGTGGGGAGCCAGGGCGCAGGTA:-"
+str2 = "LZTR1:22:21343966:G*A:-"
+res_alpha$mut = gsub(str1, str2, res_alpha$mut, fixed = TRUE)
+res_beta$mut = gsub(str1, str2, res_beta$mut, fixed = TRUE)
+res_both$mut = gsub(str1, str2, res_both$mut, fixed = TRUE)
+
+
+t_alpha = sort(table(res_alpha$mut), decreasing = TRUE)
+t_beta  = sort(table(res_beta$mut),  decreasing = TRUE)
+t_both  = sort(table(res_both$mut),  decreasing = TRUE)
+
+table(t_alpha)
+length(t_alpha)
+t_alpha[1:10]
+
+table(t_beta)
+length(t_beta)
+t_beta[1:10]
+
+table(t_both)
+length(t_both)
+t_both[1:10]
+```
+
+## Check the distribution of p-value cutoffs
+
+```{r fig.width=3, fig.height=3}
+res_alpha %>%
+  count(pcut) %>%
+  arrange(pcut) %>%
+  mutate(pcut = factor(pcut, levels = unique(pcut))) %>%
+  ggplot(aes(x = pcut, y = n)) +
+  geom_col(fill = "lightgreen", color = "seagreen4", linewidth = 0.6) +
+  labs(
+    x = "p-value cutoff",
+    y = "Count",
+    title = "alpha chain"
+  ) +
+  theme_minimal(base_size = 14) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+```{r fig.width=3, fig.height=3}
+res_beta %>%
+  count(pcut) %>%
+  arrange(pcut) %>%
+  mutate(pcut = factor(pcut, levels = unique(pcut))) %>%
+  ggplot(aes(x = pcut, y = n)) +
+  geom_col(fill = "lightgreen", color = "seagreen4", linewidth = 0.6) +
+  labs(
+    x = "p-value cutoff",
+    y = "Count",
+    title = "beta chain"
+  ) +
+  theme_minimal(base_size = 14) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r fig.width=5, fig.height=4.5}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+df <- res_both %>%
+  filter(is.finite(pcut_A), is.finite(pcut_B), pcut_A > 0, pcut_B > 0)
+
+# count each unique (pcut_A, pcut_B) combo and order axes by numeric p-values
+tab <- df %>%
+  count(pcut_A, pcut_B, name = "n") %>%
+  mutate(
+    x = factor(pcut_A, levels = sort(unique(pcut_A))),  # ordered smallest→largest
+    y = factor(pcut_B, levels = sort(unique(pcut_B)))
+  )
+
+# marginal totals for bars
+colsum <- tab %>% group_by(x) %>% summarise(total = sum(n), .groups = "drop")
+rowsum <- tab %>% group_by(y) %>% summarise(total = sum(n), .groups = "drop")
+
+# pretty labels for discrete (factor) axes
+lab_p <- function(v) scales::label_scientific()(as.numeric(as.character(v)))
+
+
+# lock factor levels from the heatmap data
+levels_x <- levels(tab$x)
+levels_y <- levels(tab$y)
+
+# HEATMAP (raw p-values)
+p_heat <- ggplot(tab, aes(x = x, y = y, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(name = "Count") +
+  scale_x_discrete(limits = levels_x, drop = FALSE, expand = c(0, 0)) +
+  scale_y_discrete(limits = levels_y, drop = FALSE, expand = c(0, 0)) +
+  labs(x = "pcut_A", y = "pcut_B", title = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    plot.margin = margin(2, 2, 2, 2)
+  )
+
+# TOP BAR (column totals) — lock x levels, no expansion
+colsum <- colsum %>% mutate(x = factor(x, levels = levels_x))
+p_top <- ggplot(colsum, aes(x = x, y = total)) +
+  geom_col() +
+  scale_x_discrete(limits = levels_x, drop = FALSE, expand = c(0, 0)) +
+  labs(y = "Total") +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(2, 2, 2, 2)
+  )
+
+# RIGHT BAR (row totals) — lock y levels, no expansion; aligns to heatmap only
+rowsum <- rowsum %>% mutate(y = factor(y, levels = levels_y))
+p_right <- ggplot(rowsum, aes(y = y, x = total)) +
+  geom_col() +
+  scale_y_discrete(limits = levels_y, drop = FALSE, expand = c(0, 0)) +
+  labs(x = "Total") +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(2, 2, 2, 2)
+  )
+
+# ---- assemble with a spacer in the top-right cell ----
+design <- "
+AB
+CD
+"
+
+p_top + plot_spacer() + p_heat + p_right +
+  plot_layout(design = design, widths = c(4, 1.3), heights = c(1.2, 4))
+
+
+
+```
+
+## Now set the p-value cutoff based on the concensus from individual mutations
+```{r}
+setorder(res_alpha, cancer, mut, -auc, pcut)
+df_alpha = res_alpha[pcut == 0.1, .SD[1], by = .(cancer, mut)][order(-auc),]
+
+setorder(res_beta, cancer, mut, -auc, pcut)
+df_beta = res_beta[pcut == 0.1, .SD[1], by = .(cancer, mut)][order(-auc),]
+
+setorder(res_both, cancer, mut, -auc, pcut_A, pcut_B)
+df_both = res_both[(pcut_A == 0.01 & pcut_B == 0.05) |  (pcut_A == 0.05 & pcut_B == 0.10) | (pcut_A == 0.1 & pcut_B == 0.2), 
+                   .SD[1], by = .(cancer, mut)][order(-auc),]
+
+dim(df_alpha)
+df_alpha[1:2,]
+
+dim(df_beta)
+df_beta[1:2,]
+
+dim(df_both)
+df_both[1:2,]
+
+summary(df_alpha$auc)
+summary(df_beta$auc)
+summary(df_both$auc)
+```
+
+```{r}
+flextable(df_both[1:20,])
+```
+
+
+```{r}
+df1 = df_both[1:10,c("cancer", "mut", "auc")]
+names(df1) = c("Cancer", "Mutation", "AUC")
+flextable(df1)
+```
+
+## Venn diagram
+
+```{r, fig.width=3, fig.height=3}
+
+t_alpha = sort(table(df_alpha$mut), decreasing = TRUE)
+t_beta  = sort(table(df_beta$mut),  decreasing = TRUE)
+t_both  = sort(table(df_both$mut),  decreasing = TRUE)
+
+# number of mutations
+mut1 = list("alpha" = names(t_alpha), 
+            "beta"  = names(t_beta), 
+            "alpha + beta"  = names(t_both))
+
+ggvenn(mut1, show_percentage=FALSE, 
+       set_name_size = 7,     # font size for set names
+       text_size = 7          # font size for numbers inside
+) + coord_cartesian(clip = "off") + theme(plot.margin = margin(5, 5, 10, 5))  
+
+```
+
+## Check the consistency of p-value threshold. 
+
+Some mutations are predicted in multiple cancer types. We can check the consistency of p-value threshold. 
+
+## Read in all the somatic mutation data
+
+```{r}
+mut_dir   = "~/research/data/TCR/TCGA"
+mutation_file = "mc3.v0.2.8.CONTROLLED.maf.gz"
+
+mut_dat0 = fread(file.path(mut_dir, mutation_file), 
+                select = c("Hugo_Symbol", "NCBI_Build", "Chromosome", "Strand", 
+                           "Start_Position", "End_Position", "Reference_Allele", 
+                           "Tumor_Seq_Allele1", "Tumor_Seq_Allele2", 
+                           "Variant_Classification", "Variant_Type", 
+                           "Feature", "Feature_type", "Consequence", 
+                           "HGVSc", "HGVSp", "HGVSp_Short"))
+dim(mut_dat0)
+mut_dat0[1:2,]
+
+mut_dat0 = distinct(mut_dat0)
+dim(mut_dat0)
+mut_dat0[1:2,]
+
+table(mut_dat0$Strand)
+table(mut_dat0$Variant_Type)
+```
+
+
+# Write output of optimal p-value threshold
+
+```{r fig.width = 3, fig.height = 3}
+mut_symbol = paste(mut_dat0$Hugo_Symbol, mut_dat0$Chromosome, 
+                   mut_dat0$Start_Position, mut_dat0$Reference_Allele, 
+                   mut_dat0$Tumor_Seq_Allele2, sep=":")
+
+str1 = "LZTR1:22:21343966:GAGGAGGTGAGGGGCGTGGGGAGCCAGGGCGCAGGTA:-"
+str2 = "LZTR1:22:21343966:G*A:-"
+mut_symbol = gsub(str1, str2, mut_symbol, fixed = TRUE)
+
+mut_dat0[, mut := mut_symbol]
+
+mut_all = union(union(df_alpha$mut, df_beta$mut), df_both$mut)
+stopifnot(all(mut_all %in% mut_symbol))
+
+mut_dat0 = mut_dat0[mut_dat0$mut %in% mut_all,]
+dim(mut_dat0)
+mut_dat0[1:2,]
+
+df_all = list("alpha" = df_alpha, "beta" = df_beta, "both" = df_both)
+
+length(t_alpha)
+t_alpha[t_alpha > 2]
+
+length(t_beta)
+t_beta[t_beta > 2]
+
+length(t_both)
+t_both[t_both > 2]
+
+for(key1 in names(df_all)){
+  cat(key1, ": ")
+  cat(date(), "\n")
+  
+  df1 = data.table(df_all[[key1]])
+  df1 = merge(df1, mut_dat0, all.x = TRUE, all.y = FALSE)
+  df1_uniq_mut = df1 %>% group_by(mut) %>% 
+    filter(auc == max(auc)) %>% ungroup() %>% data.frame()
+  
+  df1 = df1[order(df1$auc, decreasing = TRUE),]
+  df1_uniq_mut = df1_uniq_mut[order(df1_uniq_mut$auc, decreasing = TRUE),]
+  
+  fnm = sprintf("cv_optimal_pcut_%s_mut_cancer_combos.tsv", key1)
+  fwrite(df1, file.path(res_dir, fnm), sep="\t")
+
+  fnm = sprintf("cv_optimal_pcut_%s_uniq_mutations.tsv", key1)
+  fwrite(df1_uniq_mut, file.path(res_dir, fnm), sep="\t")
+  
+  rm(df1)
+  rm(df1_uniq_mut)
+  gc()
+}
+
+```
+
+
+# Examine a few mutations
+
+## Read in data
+```{r fig.width = 3, fig.height = 3}
+source("../_utilities.R")
+
+TCR_data_a  = fread(file.path(data_dir, "TCR_alpha_5.tsv"))
+TCR_data_b  = fread(file.path(data_dir, "TCR_beta_5.tsv"))
+mut_data    = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data_a)
+dim(TCR_data_b)
+
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data_a)
+head(TCR_data_b)
+
+head(mut_data)
+head(sample_info)
+```
+
+
+## Add information to df_both
+
+```{r}
+mut_freq = as.data.frame(table(mut_data$key))
+names(mut_freq)[1] = "mut"
+dim(mut_freq)
+mut_freq[1:2,]
+
+str1 = "LZTR1:22:21343966:GAGGAGGTGAGGGGCGTGGGGAGCCAGGGCGCAGGTA:-"
+str2 = "LZTR1:22:21343966:G*A:-"
+mut_freq$mut = gsub(str1, str2, mut_freq$mut, fixed = TRUE)
+
+table(df_both$mut %in% mut_freq$mut)
+
+df_both = merge(df_both, mut_freq, by = "mut", all.x = TRUE, all.y = FALSE)
+df_both = merge(df_both, mut_dat0, by = "mut", all.x = TRUE, all.y = FALSE)
+
+dim(df_both)
+df_both[1:2,]
+
+
+```
+
+## Read in TCR-mutation assocaition data
+
+```{r fig.width = 3, fig.height = 3}
+
+draw_roc <- function(mut_name, pcut_A, pcut_B, c_type, pname){
+  r1_a = fread(file.path(res_dir, sprintf("train_alpha_wo_%s.tsv", c_type)))
+  r1_b = fread(file.path(res_dir, sprintf("train_beta_wo_%s.tsv", c_type)))
+  r1_a$TCR = paste0("alpha_", r1_a$TCR)
+  r1_b$TCR = paste0("beta_",  r1_b$TCR)
+  r1_a$chain = "A"
+  r1_b$chain = "B"
+  
+  r1 = rbind(r1_a, r1_b)
+    
+  d1_a = get_dat_one_cancer(c_type, TCR_data_a, mut_data, sample_info)
+  mut1_a = d1_a$mut_mat
+  tcr1_a = d1_a$TCR_mat
+  
+  d1_b = get_dat_one_cancer(c_type, TCR_data_b, mut_data, sample_info)
+  mut1_b = d1_b$mut_mat
+  tcr1_b = d1_b$TCR_mat
+  
+  mut1 = mut1_a
+  
+  stopifnot(identical(mut1_a, mut1_b))
+  stopifnot(all(colnames(tcr1_a) == colnames(tcr1_b)))
+  stopifnot(all(colnames(mut1) == colnames(tcr1_b)))
+  
+  rownames(tcr1_a) = paste0("alpha_", rownames(tcr1_a))
+  rownames(tcr1_b) = paste0("beta_",  rownames(tcr1_b))
+  tcr1 = rbind(tcr1_a, tcr1_b)
+  
+  dim(tcr1)
+  tcr1[1:2,1:4]
+  
+  dim(mut1)
+  mut1[1:2,1:4]
+  
+  mut_j = mut1[rownames(mut1) == mut_name,]
+  res_j = r1[which(r1$mut == mut_name),,drop = FALSE]
+  
+  tcr_ji = res_j[(pval_LRT < pcut_A & chain == "A") | (pval_LRT < pcut_B & chain == "B"), "TCR"]
+  tcr_ji = unlist(tcr_ji)
+  ww_tcr = which(rownames(tcr1) %in% tcr_ji)
+  length(ww_tcr)
+  
+  tcr_pred_ji = colSums(tcr1[ww_tcr,,drop=FALSE] > 0)
+  table(tcr_pred_ji)
+  table(mut_j)
+  
+  table(tcr_pred_ji, mut_j)
+  
+  roc_obj <- roc(response = mut_j, predictor = tcr_pred_ji, quiet = TRUE)
+  auc_val <- as.numeric(auc(roc_obj))
+  roc_df  <- data.frame(
+    FPR = 1 - roc_obj$specificities,
+    TPR = roc_obj$sensitivities,
+    threshold = roc_obj$thresholds
+  )
+  
+  # --- ggplot ROC ---
+  gg1 = ggplot(roc_df, aes(FPR, TPR)) +
+    geom_path(linewidth = 1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    coord_equal() +
+    scale_x_continuous(limits = c(0, 1), expand = c(0, 0.01)) +
+    scale_y_continuous(limits = c(0, 1), expand = c(0, 0.01)) +
+    labs(
+      subtitle = sprintf("%s@%s", pname, c_type), 
+      x = "1 - Specificity",
+      y = "Sensitivity"
+    ) +
+    theme_minimal(base_size = 14) + 
+    annotate("text",
+           x = 0.98, y = 0.02,  
+           label = sprintf("AUC = %.3f", auc_val),
+           hjust = 1, vjust = 0, size = 5) 
+
+  gg1
+}
+
+cols = c("mut", "cancer", "auc", "pcut_A", "pcut_B", "Freq", "HGVSp_Short")
+
+df_both[auc > 0.7, ..cols]
+df_both[Freq > 100, ..cols]
+
+draw_roc(mut_name = "TP53:17:7577539:G:A", pcut_A = 0.05, pcut_B = 0.1, 
+         c_type = "STAD", pname = "TP53.p.R248W")
+
+draw_roc(mut_name = "TP53:17:7578403:C:A", pcut_A = 0.05, pcut_B = 0.1, 
+         c_type = "BRCA", pname = "TP53.p.C176F")
+
+draw_roc(mut_name = "TP53:17:7578442:T:C", pcut_A = 0.05, pcut_B = 0.1, 
+         c_type = "BRCA", pname = "TP53.p.Y163C")
+
+draw_roc(mut_name = "TP53:17:7577538:C:T", pcut_A = 0.1, pcut_B = 0.2, 
+         c_type = "LUSC", pname = "TP53.p.R248Q")
+
+draw_roc(mut_name = "KRAS:12:25398284:C:A", pcut_A = 0.01, pcut_B = 0.1, 
+         c_type = "STAD", pname = "KRAS.p.G12V")
+
+draw_roc(mut_name = "ERBB3:12:56478854:G:A", pcut_A = 0.1, pcut_B = 0.2, 
+         c_type = "UCEC", pname = "ERBB3.p.V104M")
+
+```
+
+
+## Check the relation between mutation freq and p-value cutoff
+
+```{r fig.width = 6, fig.height = 4}
+
+p_A <- ggplot(df_both, aes(x = log10(Freq), y = -log10(pcut_A))) +
+  geom_point(alpha = 0.8) +
+  labs(x = "log10(Freq)", y = expression(-log[10](pcut[A]))) +
+  theme_minimal(base_size = 14)
+
+p_B <- ggplot(df_both, aes(x = log10(Freq), y = -log10(pcut_B))) +
+  geom_point(alpha = 0.8) +
+  labs(x = "log10(Freq)", y = expression(-log[10](pcut[B]))) +
+  theme_minimal(base_size = 14)
+
+p_A
+p_B
+
+```
+
+## Check AUC
+
+```{r fig.width = 6, fig.height = 4}
+
+library(ggsci)
+
+cancers <- levels(factor(df_both$cancer))
+
+pal <- ggsci::pal_igv("default")(length(cancers))
+names(pal) <- cancers
+
+pal["ESCA"] <- "#FF8C00"   # <- pick any hex you prefer
+
+
+p_auc <- ggplot(df_both, aes(x = Freq, y = auc, color = cancer)) +
+  geom_point(alpha = 0.8, size = 2) +
+  labs(x = "Mutation Freq.", y = "AUC", color = "") +
+  scale_color_manual(values = pal, breaks = cancers) +
+  theme_minimal(base_size = 14) + guides(
+  colour = guide_legend(
+    override.aes = list(size = 4.5, alpha = 1, shape = 16, stroke = 0) 
+  )
+)
+
+df_both$to_label <- with(df_both, (auc > 0.7) | (Freq > 100))
+
+p_auc_labeled <- p_auc +
+  geom_text_repel(
+    data = subset(df_both, to_label),
+    aes(label = paste0(Hugo_Symbol, HGVSp_Short)),
+    size = 3.5, 
+    force = 3.5, 
+    max.overlaps = Inf, 
+    min.segment.length = 0,
+    box.padding = 0.25,
+    point.padding = 0.2,
+    segment.alpha = 0.8, 
+    show.legend = FALSE
+  ) 
+
+p_auc_labeled 
+```
+
+# Session information
+
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

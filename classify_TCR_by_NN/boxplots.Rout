@@ -1,0 +1,302 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: x86_64-apple-darwin17.0 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> library(ggplot2)
+> library(stringr)
+> 
+> 
+> df = read.csv("results/ensemble_auc.csv", header=TRUE)
+> dim(df)
+[1] 192   5
+> 
+> df$n_CNN = as.character(df$n_CNN)
+> 
+> 
+> df$V = rep("with V", nrow(df))
+> df$V[which(df$feature%in%c("alpha_cdr3", "beta_cdr3", "both_cdr3"))] = "without V"
+> df$V = factor(df$V, levels=c("without V", "with V"))
+> 
+> df$chain = str_extract(df$feature, "[^_]+")
+> df$layer_sizes = factor(df$n_units, levels=c("32_16", "64_32", "128_64", "256_128"))
+> 
+> df
+         feature encoding n_units n_CNN       auc         V chain layer_sizes
+1     alpha_cdr3  one_hot   32_16     1 0.5021580 without V alpha       32_16
+2     alpha_cdr3  one_hot   64_32     1 0.5019793 without V alpha       64_32
+3     alpha_cdr3  one_hot  128_64     1 0.5052150 without V alpha      128_64
+4     alpha_cdr3  one_hot 256_128     1 0.5030605 without V alpha     256_128
+5     alpha_cdr3  one_hot   32_16     2 0.5029994 without V alpha       32_16
+6     alpha_cdr3  one_hot   64_32     2 0.5048510 without V alpha       64_32
+7     alpha_cdr3  one_hot  128_64     2 0.5045373 without V alpha      128_64
+8     alpha_cdr3  one_hot 256_128     2 0.5032872 without V alpha     256_128
+9     alpha_cdr3 blosum62   32_16     1 0.5285383 without V alpha       32_16
+10    alpha_cdr3 blosum62   64_32     1 0.5132370 without V alpha       64_32
+11    alpha_cdr3 blosum62  128_64     1 0.5142364 without V alpha      128_64
+12    alpha_cdr3 blosum62 256_128     1 0.5187320 without V alpha     256_128
+13    alpha_cdr3 blosum62   32_16     2 0.5266938 without V alpha       32_16
+14    alpha_cdr3 blosum62   64_32     2 0.5172981 without V alpha       64_32
+15    alpha_cdr3 blosum62  128_64     2 0.5089779 without V alpha      128_64
+16    alpha_cdr3 blosum62 256_128     2 0.5076121 without V alpha     256_128
+17    alpha_cdr3  atchley   32_16     1 0.5105068 without V alpha       32_16
+18    alpha_cdr3  atchley   64_32     1 0.5190429 without V alpha       64_32
+19    alpha_cdr3  atchley  128_64     1 0.5218294 without V alpha      128_64
+20    alpha_cdr3  atchley 256_128     1 0.5225584 without V alpha     256_128
+21    alpha_cdr3  atchley   32_16     2 0.5148007 without V alpha       32_16
+22    alpha_cdr3  atchley   64_32     2 0.5207675 without V alpha       64_32
+23    alpha_cdr3  atchley  128_64     2 0.5211894 without V alpha      128_64
+24    alpha_cdr3  atchley 256_128     2 0.5230061 without V alpha     256_128
+25    alpha_cdr3      pca   32_16     1 0.5061062 without V alpha       32_16
+26    alpha_cdr3      pca   64_32     1 0.5021387 without V alpha       64_32
+27    alpha_cdr3      pca  128_64     1 0.5083787 without V alpha      128_64
+28    alpha_cdr3      pca 256_128     1 0.5104090 without V alpha     256_128
+29    alpha_cdr3      pca   32_16     2 0.5038158 without V alpha       32_16
+30    alpha_cdr3      pca   64_32     2 0.5180026 without V alpha       64_32
+31    alpha_cdr3      pca  128_64     2 0.5114799 without V alpha      128_64
+32    alpha_cdr3      pca 256_128     2 0.5051430 without V alpha     256_128
+33     beta_cdr3  one_hot   32_16     1 0.5531783 without V  beta       32_16
+34     beta_cdr3  one_hot   64_32     1 0.5510690 without V  beta       64_32
+35     beta_cdr3  one_hot  128_64     1 0.5540136 without V  beta      128_64
+36     beta_cdr3  one_hot 256_128     1 0.5507045 without V  beta     256_128
+37     beta_cdr3  one_hot   32_16     2 0.5495847 without V  beta       32_16
+38     beta_cdr3  one_hot   64_32     2 0.5491455 without V  beta       64_32
+39     beta_cdr3  one_hot  128_64     2 0.5510779 without V  beta      128_64
+40     beta_cdr3  one_hot 256_128     2 0.5442849 without V  beta     256_128
+41     beta_cdr3 blosum62   32_16     1 0.5579994 without V  beta       32_16
+42     beta_cdr3 blosum62   64_32     1 0.5564432 without V  beta       64_32
+43     beta_cdr3 blosum62  128_64     1 0.5561332 without V  beta      128_64
+44     beta_cdr3 blosum62 256_128     1 0.5589927 without V  beta     256_128
+45     beta_cdr3 blosum62   32_16     2 0.5572700 without V  beta       32_16
+46     beta_cdr3 blosum62   64_32     2 0.5672832 without V  beta       64_32
+47     beta_cdr3 blosum62  128_64     2 0.5624066 without V  beta      128_64
+48     beta_cdr3 blosum62 256_128     2 0.5651222 without V  beta     256_128
+49     beta_cdr3  atchley   32_16     1 0.5427484 without V  beta       32_16
+50     beta_cdr3  atchley   64_32     1 0.5372364 without V  beta       64_32
+51     beta_cdr3  atchley  128_64     1 0.5347174 without V  beta      128_64
+52     beta_cdr3  atchley 256_128     1 0.5272358 without V  beta     256_128
+53     beta_cdr3  atchley   32_16     2 0.5292365 without V  beta       32_16
+54     beta_cdr3  atchley   64_32     2 0.5356463 without V  beta       64_32
+55     beta_cdr3  atchley  128_64     2 0.5330267 without V  beta      128_64
+56     beta_cdr3  atchley 256_128     2 0.5289990 without V  beta     256_128
+57     beta_cdr3      pca   32_16     1 0.5522090 without V  beta       32_16
+58     beta_cdr3      pca   64_32     1 0.5526370 without V  beta       64_32
+59     beta_cdr3      pca  128_64     1 0.5549862 without V  beta      128_64
+60     beta_cdr3      pca 256_128     1 0.5458016 without V  beta     256_128
+61     beta_cdr3      pca   32_16     2 0.5472727 without V  beta       32_16
+62     beta_cdr3      pca   64_32     2 0.5586861 without V  beta       64_32
+63     beta_cdr3      pca  128_64     2 0.5408121 without V  beta      128_64
+64     beta_cdr3      pca 256_128     2 0.5518450 without V  beta     256_128
+65  alpha_cdr3_v  one_hot   32_16     1 0.5122491    with V alpha       32_16
+66  alpha_cdr3_v  one_hot   64_32     1 0.5137799    with V alpha       64_32
+67  alpha_cdr3_v  one_hot  128_64     1 0.5132452    with V alpha      128_64
+68  alpha_cdr3_v  one_hot 256_128     1 0.5139831    with V alpha     256_128
+69  alpha_cdr3_v  one_hot   32_16     2 0.5139347    with V alpha       32_16
+70  alpha_cdr3_v  one_hot   64_32     2 0.5139732    with V alpha       64_32
+71  alpha_cdr3_v  one_hot  128_64     2 0.5143255    with V alpha      128_64
+72  alpha_cdr3_v  one_hot 256_128     2 0.5135721    with V alpha     256_128
+73  alpha_cdr3_v blosum62   32_16     1 0.5251670    with V alpha       32_16
+74  alpha_cdr3_v blosum62   64_32     1 0.5170627    with V alpha       64_32
+75  alpha_cdr3_v blosum62  128_64     1 0.5218871    with V alpha      128_64
+76  alpha_cdr3_v blosum62 256_128     1 0.5184200    with V alpha     256_128
+77  alpha_cdr3_v blosum62   32_16     2 0.5259651    with V alpha       32_16
+78  alpha_cdr3_v blosum62   64_32     2 0.5199724    with V alpha       64_32
+79  alpha_cdr3_v blosum62  128_64     2 0.5222181    with V alpha      128_64
+80  alpha_cdr3_v blosum62 256_128     2 0.5186866    with V alpha     256_128
+81  alpha_cdr3_v  atchley   32_16     1 0.5249478    with V alpha       32_16
+82  alpha_cdr3_v  atchley   64_32     1 0.5243693    with V alpha       64_32
+83  alpha_cdr3_v  atchley  128_64     1 0.5295704    with V alpha      128_64
+84  alpha_cdr3_v  atchley 256_128     1 0.5246698    with V alpha     256_128
+85  alpha_cdr3_v  atchley   32_16     2 0.5233727    with V alpha       32_16
+86  alpha_cdr3_v  atchley   64_32     2 0.5292238    with V alpha       64_32
+87  alpha_cdr3_v  atchley  128_64     2 0.5294891    with V alpha      128_64
+88  alpha_cdr3_v  atchley 256_128     2 0.5291721    with V alpha     256_128
+89  alpha_cdr3_v      pca   32_16     1 0.5201845    with V alpha       32_16
+90  alpha_cdr3_v      pca   64_32     1 0.5177460    with V alpha       64_32
+91  alpha_cdr3_v      pca  128_64     1 0.5236305    with V alpha      128_64
+92  alpha_cdr3_v      pca 256_128     1 0.5228451    with V alpha     256_128
+93  alpha_cdr3_v      pca   32_16     2 0.5157378    with V alpha       32_16
+94  alpha_cdr3_v      pca   64_32     2 0.5185390    with V alpha       64_32
+95  alpha_cdr3_v      pca  128_64     2 0.5223893    with V alpha      128_64
+96  alpha_cdr3_v      pca 256_128     2 0.5174116    with V alpha     256_128
+97   beta_cdr3_v  one_hot   32_16     1 0.5508980    with V  beta       32_16
+98   beta_cdr3_v  one_hot   64_32     1 0.5475847    with V  beta       64_32
+99   beta_cdr3_v  one_hot  128_64     1 0.5491725    with V  beta      128_64
+100  beta_cdr3_v  one_hot 256_128     1 0.5499824    with V  beta     256_128
+101  beta_cdr3_v  one_hot   32_16     2 0.5510467    with V  beta       32_16
+102  beta_cdr3_v  one_hot   64_32     2 0.5465745    with V  beta       64_32
+103  beta_cdr3_v  one_hot  128_64     2 0.5489867    with V  beta      128_64
+104  beta_cdr3_v  one_hot 256_128     2 0.5495958    with V  beta     256_128
+105  beta_cdr3_v blosum62   32_16     1 0.5613407    with V  beta       32_16
+106  beta_cdr3_v blosum62   64_32     1 0.5541775    with V  beta       64_32
+107  beta_cdr3_v blosum62  128_64     1 0.5563103    with V  beta      128_64
+108  beta_cdr3_v blosum62 256_128     1 0.5599810    with V  beta     256_128
+109  beta_cdr3_v blosum62   32_16     2 0.5637552    with V  beta       32_16
+110  beta_cdr3_v blosum62   64_32     2 0.5630780    with V  beta       64_32
+111  beta_cdr3_v blosum62  128_64     2 0.5589454    with V  beta      128_64
+112  beta_cdr3_v blosum62 256_128     2 0.5514135    with V  beta     256_128
+113  beta_cdr3_v  atchley   32_16     1 0.5432429    with V  beta       32_16
+114  beta_cdr3_v  atchley   64_32     1 0.5430915    with V  beta       64_32
+115  beta_cdr3_v  atchley  128_64     1 0.5356823    with V  beta      128_64
+116  beta_cdr3_v  atchley 256_128     1 0.5370335    with V  beta     256_128
+117  beta_cdr3_v  atchley   32_16     2 0.5431879    with V  beta       32_16
+118  beta_cdr3_v  atchley   64_32     2 0.5382144    with V  beta       64_32
+119  beta_cdr3_v  atchley  128_64     2 0.5351997    with V  beta      128_64
+120  beta_cdr3_v  atchley 256_128     2 0.5310328    with V  beta     256_128
+121  beta_cdr3_v      pca   32_16     1 0.5501639    with V  beta       32_16
+122  beta_cdr3_v      pca   64_32     1 0.5409586    with V  beta       64_32
+123  beta_cdr3_v      pca  128_64     1 0.5569932    with V  beta      128_64
+124  beta_cdr3_v      pca 256_128     1 0.5395665    with V  beta     256_128
+125  beta_cdr3_v      pca   32_16     2 0.5412742    with V  beta       32_16
+126  beta_cdr3_v      pca   64_32     2 0.5393967    with V  beta       64_32
+127  beta_cdr3_v      pca  128_64     2 0.5381335    with V  beta      128_64
+128  beta_cdr3_v      pca 256_128     2 0.5409986    with V  beta     256_128
+129    both_cdr3  one_hot   32_16     1 0.5423082 without V  both       32_16
+130    both_cdr3  one_hot   64_32     1 0.5395113 without V  both       64_32
+131    both_cdr3  one_hot  128_64     1 0.5410115 without V  both      128_64
+132    both_cdr3  one_hot 256_128     1 0.5390715 without V  both     256_128
+133    both_cdr3  one_hot   32_16     2 0.5420866 without V  both       32_16
+134    both_cdr3  one_hot   64_32     2 0.5414640 without V  both       64_32
+135    both_cdr3  one_hot  128_64     2 0.5413379 without V  both      128_64
+136    both_cdr3  one_hot 256_128     2 0.5415703 without V  both     256_128
+137    both_cdr3 blosum62   32_16     1 0.5559033 without V  both       32_16
+138    both_cdr3 blosum62   64_32     1 0.5576208 without V  both       64_32
+139    both_cdr3 blosum62  128_64     1 0.5678344 without V  both      128_64
+140    both_cdr3 blosum62 256_128     1 0.5611373 without V  both     256_128
+141    both_cdr3 blosum62   32_16     2 0.5637696 without V  both       32_16
+142    both_cdr3 blosum62   64_32     2 0.5694288 without V  both       64_32
+143    both_cdr3 blosum62  128_64     2 0.5563265 without V  both      128_64
+144    both_cdr3 blosum62 256_128     2 0.5627095 without V  both     256_128
+145    both_cdr3  atchley   32_16     1 0.5371240 without V  both       32_16
+146    both_cdr3  atchley   64_32     1 0.5306042 without V  both       64_32
+147    both_cdr3  atchley  128_64     1 0.5302002 without V  both      128_64
+148    both_cdr3  atchley 256_128     1 0.5339476 without V  both     256_128
+149    both_cdr3  atchley   32_16     2 0.5417504 without V  both       32_16
+150    both_cdr3  atchley   64_32     2 0.5322465 without V  both       64_32
+151    both_cdr3  atchley  128_64     2 0.5287850 without V  both      128_64
+152    both_cdr3  atchley 256_128     2 0.5300341 without V  both     256_128
+153    both_cdr3      pca   32_16     1 0.5559907 without V  both       32_16
+154    both_cdr3      pca   64_32     1 0.5449851 without V  both       64_32
+155    both_cdr3      pca  128_64     1 0.5476654 without V  both      128_64
+156    both_cdr3      pca 256_128     1 0.5480313 without V  both     256_128
+157    both_cdr3      pca   32_16     2 0.5514086 without V  both       32_16
+158    both_cdr3      pca   64_32     2 0.5458486 without V  both       64_32
+159    both_cdr3      pca  128_64     2 0.5422277 without V  both      128_64
+160    both_cdr3      pca 256_128     2 0.5492094 without V  both     256_128
+161  both_cdr3_v  one_hot   32_16     1 0.5475732    with V  both       32_16
+162  both_cdr3_v  one_hot   64_32     1 0.5459079    with V  both       64_32
+163  both_cdr3_v  one_hot  128_64     1 0.5435136    with V  both      128_64
+164  both_cdr3_v  one_hot 256_128     1 0.5444250    with V  both     256_128
+165  both_cdr3_v  one_hot   32_16     2 0.5472257    with V  both       32_16
+166  both_cdr3_v  one_hot   64_32     2 0.5454926    with V  both       64_32
+167  both_cdr3_v  one_hot  128_64     2 0.5469313    with V  both      128_64
+168  both_cdr3_v  one_hot 256_128     2 0.5471095    with V  both     256_128
+169  both_cdr3_v blosum62   32_16     1 0.5450199    with V  both       32_16
+170  both_cdr3_v blosum62   64_32     1 0.5488050    with V  both       64_32
+171  both_cdr3_v blosum62  128_64     1 0.5532296    with V  both      128_64
+172  both_cdr3_v blosum62 256_128     1 0.5503085    with V  both     256_128
+173  both_cdr3_v blosum62   32_16     2 0.5503222    with V  both       32_16
+174  both_cdr3_v blosum62   64_32     2 0.5503805    with V  both       64_32
+175  both_cdr3_v blosum62  128_64     2 0.5498744    with V  both      128_64
+176  both_cdr3_v blosum62 256_128     2 0.5530212    with V  both     256_128
+177  both_cdr3_v  atchley   32_16     1 0.5577925    with V  both       32_16
+178  both_cdr3_v  atchley   64_32     1 0.5537168    with V  both       64_32
+179  both_cdr3_v  atchley  128_64     1 0.5552232    with V  both      128_64
+180  both_cdr3_v  atchley 256_128     1 0.5525147    with V  both     256_128
+181  both_cdr3_v  atchley   32_16     2 0.5565245    with V  both       32_16
+182  both_cdr3_v  atchley   64_32     2 0.5566369    with V  both       64_32
+183  both_cdr3_v  atchley  128_64     2 0.5599319    with V  both      128_64
+184  both_cdr3_v  atchley 256_128     2 0.5589744    with V  both     256_128
+185  both_cdr3_v      pca   32_16     1 0.5675649    with V  both       32_16
+186  both_cdr3_v      pca   64_32     1 0.5645404    with V  both       64_32
+187  both_cdr3_v      pca  128_64     1 0.5709986    with V  both      128_64
+188  both_cdr3_v      pca 256_128     1 0.5722497    with V  both     256_128
+189  both_cdr3_v      pca   32_16     2 0.5615027    with V  both       32_16
+190  both_cdr3_v      pca   64_32     2 0.5701432    with V  both       64_32
+191  both_cdr3_v      pca  128_64     2 0.5720573    with V  both      128_64
+192  both_cdr3_v      pca 256_128     2 0.5742602    with V  both     256_128
+> 
+> pdf(file = "./figures/auc_chain_v_boxplot.pdf", width = 4, height = 2.5)
+> ggplot(df, aes(x=chain, y=auc, fill=V)) + 
++   geom_boxplot() +
++   geom_point(position=position_jitterdodge(), size=0.1) + 
++   theme_classic()
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file = "./figures/auc_chain_v_stripchart.pdf", width = 4, height = 2.5)
+> ggplot(df, aes(x=chain, y=auc, color=V)) +
++   geom_point(position = position_jitterdodge(), size=1) + theme_classic()
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file = "./figures/auc_chain_v_encoding_stripchart.pdf", width = 5, height = 2.6)
+> ggplot(df, aes(x=chain, y=auc, color=V, shape=encoding)) +
++   geom_jitter(position=position_dodge(0.6)) + theme_classic()
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file = "./figures/auc_chain_v_layer_sizes_stripchart.pdf", width = 5, height = 2.6)
+> ggplot(df, aes(x=chain, y=auc, color=V, shape=layer_sizes)) +
++   geom_jitter(position=position_dodge(0.8)) + theme_classic()
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file = "./figures/auc_chain_v_n_cnn_stripchart.pdf", width = 4, height = 2.6)
+> ggplot(df, aes(x=chain, y=auc, color=V, shape=n_CNN)) +
++   geom_jitter(position=position_dodge(0.8)) + theme_classic()
+> dev.off()
+null device 
+          1 
+> 
+> 
+> 
+> sessionInfo()
+R version 4.2.3 (2023-03-15)
+Platform: x86_64-apple-darwin17.0 (64-bit)
+Running under: macOS Big Sur ... 10.16
+
+Matrix products: default
+BLAS:   /Library/Frameworks/R.framework/Versions/4.2/Resources/lib/libRblas.0.dylib
+LAPACK: /Library/Frameworks/R.framework/Versions/4.2/Resources/lib/libRlapack.dylib
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] stringr_1.5.0 ggplot2_3.4.2
+
+loaded via a namespace (and not attached):
+ [1] fansi_1.0.4      withr_2.5.0      dplyr_1.1.2      utf8_1.2.3      
+ [5] grid_4.2.3       R6_2.5.1         lifecycle_1.0.3  gtable_0.3.3    
+ [9] magrittr_2.0.3   scales_1.2.1     pillar_1.9.0     stringi_1.7.12  
+[13] rlang_1.1.1      cli_3.6.1        farver_2.1.1     generics_0.1.3  
+[17] vctrs_0.6.3      labeling_0.4.2   tools_4.2.3      glue_1.6.2      
+[21] munsell_0.5.0    compiler_4.2.3   pkgconfig_2.0.3  colorspace_2.1-0
+[25] tidyselect_1.2.0 tibble_3.2.1    
+> 
+> q(save="no")
+> proc.time()
+   user  system elapsed 
+  1.289   0.100   1.392 

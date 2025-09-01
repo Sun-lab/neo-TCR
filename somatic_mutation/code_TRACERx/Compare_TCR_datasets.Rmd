@@ -1,0 +1,152 @@
+---
+title: "Validate TCGA results with TRACERx data"
+author: "Bo Yu"
+date: "2024-02-26"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/fh/scratch/delete90/sun_w/yub/tcr/tracerx/')
+```
+
+```{r}
+library(dplyr)
+library(ggpubr)
+```
+
+
+## Load TCRs from RNA-seq & TCR-seq data
+
+```{r Load TCRs from RNA-seq data}
+# From RNA-seq
+tcr1 = readRDS('rna-seq/results/tcr_mat.rds')
+
+tcr1[1:4, 1:4]
+
+dim(tcr1)
+
+summary(colMeans(tcr1))
+
+# From TCR-seq: tumors + blood
+tcr2 = readRDS('tcr-seq/results/tcr_mat_blood.rds')
+
+tcr2[1:4, 1:4]
+
+dim(tcr2)
+
+summary(colMeans(tcr2))
+
+# From TCR-seq: tumors only
+tcr3 = readRDS('tcr-seq/results/tcr_mat_tumor.rds')
+
+tcr3[1:4, 1:4]
+
+dim(tcr3)
+
+summary(colMeans(tcr3))
+```
+
+## Compare RNA-seq & TCR-seq merging tumors and blood
+
+```{r}
+# Sample overlap
+mean(rownames(tcr2) %in% rownames(tcr1))
+
+# TCR overlap
+mean(colnames(tcr1) %in% colnames(tcr2))
+
+# TCR overlap when looking at common samples
+common_samples = intersect(rownames(tcr1), rownames(tcr2))
+
+subset_tcr1 = tcr1[common_samples, ]
+subset_tcr1 = subset_tcr1[, colSums(subset_tcr1) > 0]
+
+subset_tcr2 = tcr2[common_samples, ]
+subset_tcr2 = subset_tcr2[, colSums(subset_tcr2) > 0]
+  
+mean(colnames(subset_tcr1) %in% colnames(subset_tcr2))
+
+# Correlations
+common_tcrs = intersect(colnames(subset_tcr1), colnames(subset_tcr2))
+
+subset_tcr1 = subset_tcr1[, common_tcrs]
+subset_tcr2 = subset_tcr2[, common_tcrs]
+
+cors = sapply(common_tcrs, function(tcr) cor(subset_tcr1[, tcr], subset_tcr2[, tcr], method = 'sp'))
+
+hist(cors, breaks = 100)
+
+# Test 1
+test_tcrs = common_tcrs[cors > 0.99]
+
+length(test_tcrs)
+
+summary(colMeans(subset_tcr1[, test_tcrs]))
+
+summary(colMeans(subset_tcr2[, test_tcrs]))
+
+# Test 2
+test_tcrs = common_tcrs[cors < 0]
+
+length(test_tcrs)
+
+summary(colMeans(subset_tcr1[, test_tcrs]))
+
+summary(colMeans(subset_tcr2[, test_tcrs]))
+```
+
+
+
+## Compare RNA-seq & TCR-seq tumors only
+
+```{r}
+# Sample overlap
+mean(rownames(tcr3) %in% rownames(tcr1))
+
+# TCR overlap
+mean(colnames(tcr1) %in% colnames(tcr3))
+
+# TCR overlap when looking at common samples
+common_samples = intersect(rownames(tcr1), rownames(tcr3))
+
+subset_tcr1 = tcr1[common_samples, ]
+subset_tcr1 = subset_tcr1[, colSums(subset_tcr1) > 0]
+
+subset_tcr3 = tcr3[common_samples, ]
+subset_tcr3 = subset_tcr3[, colSums(subset_tcr3) > 0]
+  
+mean(colnames(subset_tcr1) %in% colnames(subset_tcr3))
+
+# Correlations
+common_tcrs = intersect(colnames(subset_tcr1), colnames(subset_tcr3))
+
+subset_tcr1 = subset_tcr1[, common_tcrs]
+subset_tcr3 = subset_tcr3[, common_tcrs]
+
+cors = sapply(common_tcrs, function(tcr) cor(subset_tcr1[, tcr], subset_tcr3[, tcr], method = 'sp'))
+
+hist(cors, breaks = 100)
+
+# Test 1
+test_tcrs = common_tcrs[cors > 0.99]
+
+length(test_tcrs)
+
+summary(colMeans(subset_tcr1[, test_tcrs]))
+
+summary(colMeans(subset_tcr3[, test_tcrs]))
+
+# Test 2
+test_tcrs = common_tcrs[cors < 0]
+
+length(test_tcrs)
+
+summary(colMeans(subset_tcr1[, test_tcrs]))
+
+summary(colMeans(subset_tcr3[, test_tcrs]))
+```
+

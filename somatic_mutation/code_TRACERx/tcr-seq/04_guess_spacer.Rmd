@@ -1,0 +1,72 @@
+---
+title: "Guess spacer"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/fh/fast/sun_w/yub/tcr/tracerx/tcr-seq')
+library(dplyr)
+library(ggpubr)
+```
+
+## Output size based on I8 spacer
+
+```{r Output size based on I8 spacer}
+i8_files = list.files('decombinator_results_I8/', pattern = 'tsv$')
+i8_sizes = sapply(file.path('decombinator_results_I8', i8_files), file.size)
+fsize_i8 = tibble(file = i8_files, size = i8_sizes)
+fsize_i8
+```
+
+## Output size based on M13 spacer
+
+```{r Output size based on M13 spacer}
+m13_files = list.files('decombinator_results_M13/', pattern = 'tsv$')
+m13_sizes = sapply(file.path('decombinator_results_M13', m13_files), file.size)
+fsize_m13 = tibble(file = m13_files, size = m13_sizes)
+fsize_m13
+```
+
+## Compare to determine which spacer to use
+
+```{r Compare to determine which spacer to use}
+fsize = fsize_i8 |>
+  full_join(fsize_m13, by = 'file', suffix = c('_i8', '_m13')) |>
+  mutate(
+    size_i8 = ifelse(is.na(size_i8), 0, size_i8),
+    size_m13 = ifelse(is.na(size_m13), 0, size_m13)
+  )
+ggplot(fsize, aes(size_i8, size_m13)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme_pubr()
+```
+
+```{r}
+# Ambiguous spacer
+fsize |>
+  filter(size_i8 > 0, size_m13 > 0) %>%
+  filter((size_i8 / size_m13 < 10) & (size_m13 / size_i8 < 10))
+ambg_files = c('dcr_SRR9160586_alpha.tsv', 'dcr_SRR9160548_alpha.tsv')
+```
+
+```{r}
+# Determine spacer
+spacer = fsize |>
+  filter(!(file %in% ambg_files)) %>%
+  mutate(spacer = ifelse(size_i8 > size_m13, 'i8', 'm13')) |>
+  mutate(size = ifelse(spacer == 'i8', size_i8, size_m13)) |>
+  mutate(spacer = factor(spacer))
+summary(spacer)
+```
+
+## Save
+
+```{r}
+saveRDS(spacer, file = 'spacer.rds')
+sessionInfo()
+```

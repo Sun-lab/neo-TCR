@@ -1,0 +1,717 @@
+---
+title: "Prepare TCR data and somatic mutation data"
+author: "Wei Sun, Changhao Jiang, Si Liu"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The data used in this code was downloaded from [A immunogenomic analysis of pancancer study from TCGA](https://gdc.cancer.gov/about-data/publications/panimmune). Since most of these data have restricted access. We cannot share the data in this public GitHub repo. 
+
+# Setup
+
+## R library and data input
+
+```{r}
+library(data.table)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(stringr)
+
+theme_set(theme_classic())
+```
+
+# Summarize TCR data
+
+## Load TCR data
+```{r}
+data_dir = "~/research/data/TCR/TCGA"
+
+mitcr = fread(file.path(data_dir, "mitcr_sampleStatistics_20160714.tsv"))
+tcga  = fread(file.path(data_dir, "TCGA_mitcr_cdr3_result_161008.tsv"))
+
+dim(mitcr)
+mitcr[1:3,]
+
+summary(mitcr$totTCR_reads)
+summary(mitcr$numClones)
+
+table(mitcr$totTCR_reads == 0, mitcr$numClones == 0)
+
+dim(tcga)
+tcga[1:3,]
+length(unique(tcga$AliquotBarcode))
+```
+
+## Check sample type 
+
+```{r}
+t1 = table(tcga$SampleTypeLetterCode)
+length(t1)
+sort(t1, decreasing=TRUE)[1:10]
+
+tcga[SampleTypeLetterCode == "476fc4ce-6af7-42af-8cc0-c080f2739037",][1:2,]
+tcga[SampleTypeLetterCode == "TAP",][1:2,]
+
+sample_type_str = c("NT", "TAM", "TAP", "TM", "TP", "TR")
+SampleTypeLetterCode = tcga$SampleTypeLetterCode
+SampleTypeLetterCode[! SampleTypeLetterCode %in% sample_type_str] = "others"
+
+sample_type = substr(tcga$AliquotBarcode, 14, 15)
+table(sample_type, SampleTypeLetterCode)
+
+tumor_sample_type = c("TAM", "TAP", "TM", "TP", "TR")
+validtcga = subset(tcga, SampleTypeLetterCode %in% tumor_sample_type) 
+dim(validtcga)
+```
+
+## Extract TCR data
+
+Make sure the lengths of all the TCRs are between 5-24. Filter out TCR with "~" or "*".
+
+```{r}
+TCR = validtcga[,c("AliquotBarcode", "vAllele", "aaSeq", "chain", "abundance")]
+dim(TCR)
+TCR[1:2,]
+
+table(grepl("~", TCR$aaSeq), grepl("\\*", TCR$aaSeq))
+
+TCR_filtered = TCR[!grepl("~|\\*", TCR$aaSeq), ]
+dim(TCR_filtered)
+TCR_filtered[1:2,]
+
+TCR_filtered$aaLen = nchar(TCR_filtered$aaSeq)
+table(TCR_filtered$aaLen)
+
+table(TCR_filtered$aaLen)
+sum(TCR_filtered$aaLen >=8 & TCR_filtered$aaLen <= 18)/nrow(TCR_filtered)
+```
+
+## Consolidate TCR data
+
+Here we want to define TCR based on CDR3 (or aaseq) only. If a TCR is defined based on both aaSeq and v-gene, then an aaSeq may appear multiple times in a sample.  We group by AliquotBarcode and summarize the frequency of aaSeq.
+
+```{r}
+nV = str_count(TCR_filtered$vAllele, fixed(", "))
+table(nV == 0)/length(nV)
+table(nV == 1)/length(nV)
+table(nV > 1)/length(nV)
+table(nV > 2)/length(nV)
+table(nV > 5)/length(nV)
+
+TCR_uniq = aggregate(abundance ~ AliquotBarcode + aaSeq + chain, 
+                      TCR_filtered, sum)
+TCR_uniq$Participant = substr(TCR_uniq$AliquotBarcode, 1, 12)
+
+dim(TCR_uniq)
+TCR_uniq[1:2,]
+
+rm(TCR_filtered)
+
+nrow(unique(TCR_uniq[,c("AliquotBarcode", "aaSeq", "chain")]))
+table(TCR_uniq$abundance == 1)
+summary(TCR_uniq$abundance[TCR_uniq$abundance > 1])
+
+TCR_uniq[,c("AliquotBarcode", "Participant")] %>% unique %>% 
+  reframe(table(table(Participant)))
+```
+
+
+# Summarize RNA-seq data
+
+## Load RNA-seq data
+
+```{r}
+rna_file = "EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv"
+rna = fread(file.path(data_dir, rna_file))
+
+dim(rna)
+rna[1:2,1:5]
+
+rna_gene = data.frame(gene_id = rna$gene_id)
+rna[,gene_id := NULL]
+
+rna_sample = data.frame(AliquotBarcode = names(rna))
+rna_sample$sample_type = substr(rna_sample$AliquotBarcode, 14, 15)
+rna_sample$participant = substr(rna_sample$AliquotBarcode, 1, 12)
+
+dim(rna_sample)
+rna_sample[1:2,]
+
+ts = table(rna_sample$participant)
+table(ts)
+rna_sample[rna_sample$participant == names(ts)[ts==3][1],]
+```
+
+## Calculate read-depth
+
+```{r}
+rna_sample$read_depth = colSums(rna, na.rm = TRUE)
+summary(rna_sample$read_depth/1e6)
+
+ggplot(data = rna_sample, aes(x = read_depth/1e6)) +
+  geom_histogram(binwidth = 0.5, fill = "lightblue", color = "darkblue") +
+  labs(x = "Read-depth (millions)", y = "Frequency", 
+       title = "TCGA RNA-seq data")
+```
+
+# Compare TCR and RNA-seq data
+
+## get the total number of TCRs for each patient
+
+```{r}
+length(unique(TCR_uniq$"AliquotBarcode"))
+TCR_sample = aggregate(abundance ~ AliquotBarcode, data = TCR_uniq, sum)
+dim(TCR_sample)
+head(TCR_sample)
+
+summary(TCR_sample$abundance)
+table(TCR_sample$abundance==1)
+table(TCR_sample$abundance==2)
+
+TCR_sample[grep("TCGA-A6-2677", TCR_sample$AliquotBarcode),]
+
+ggplot(data = TCR_sample, aes(x = log10(abundance))) +
+  geom_histogram(binwidth = 0.1, fill = "lightblue", color = "darkblue") +
+  labs(x = "log10(TCR abundance)", y = "Frequency", 
+       title = "TCGA TCR data")
+```
+
+## Compare TCR abundance and RNA-seq read-depth
+
+```{r fig.width=4, fig.height=3}
+table(TCR_sample$AliquotBarcode %in% rna_sample$AliquotBarcode)
+TCR_rna = merge(TCR_sample, rna_sample, by = "AliquotBarcode")
+dim(TCR_rna)
+head(TCR_rna)
+
+cor(TCR_rna$abundance, TCR_rna$read_depth)
+cor(log10(TCR_rna$abundance), log10(TCR_rna$read_depth))
+
+ggplot(data = TCR_rna, mapping = aes(x = log10(read_depth), 
+                                     y = log10(abundance))) +
+  geom_pointdensity() +
+  scale_color_viridis()
+```
+
+
+# Read in tumor purity and cell type composition
+
+```{r}
+purity_file  = "TCGA_mastercalls.abs_tables_JSedit.fixed.txt"
+ct_prop_file = "TCGA.Kallisto.fullIDs.cibersort.relative.tsv"
+
+purity   = fread(file.path(data_dir, purity_file))
+relative = fread(file.path(data_dir, ct_prop_file))
+
+dim(purity)
+purity[1:2,]
+
+setnames(purity, "sample", "barcode")
+setnames(purity, "array", "sample")
+dim(purity)
+purity[1:2,]
+
+dim(relative)
+relative[1:2,]
+
+setnames(relative, "SampleID", "barcode")
+relative$barcode = gsub("\\.", "-", relative$barcode)
+dim(relative)
+relative[1:2,]
+
+summary(rowSums(relative[,3:24]))
+```
+
+
+## Check sample types and filter out tumor samples
+
+```{r}
+table(substr(relative$barcode, 14, 15))
+sort(table(substr(purity$sample, 14, 15)))
+
+tumor_sample_types = paste0("0", 1:9)
+relative = relative[substr(barcode, 14, 15) %in% tumor_sample_types,]
+purity   = purity[substr(barcode, 14, 15) %in% tumor_sample_types,]
+
+table(substr(relative$barcode, 14, 15))
+table(substr(purity$barcode, 14, 15))
+```
+
+
+## Calculate proportion of T cells
+
+```{r}
+t_cells = c("T.cells.CD8", "T.cells.CD4.naive", "T.cells.CD4.memory.resting", 
+            "T.cells.CD4.memory.activated", "T.cells.follicular.helper", 
+            "T.cells.regulatory..Tregs.")
+
+relative$T_cell_prop = rowSums(relative[, ..t_cells])
+
+T_cell_info = relative[,c("barcode", "T_cell_prop")]
+T_cell_info$sample = substr(T_cell_info$barcode, 1, 15)
+
+dim(T_cell_info)
+T_cell_info[1:2,]
+```
+
+
+## Adjust the proportion of T cells by tumor purity
+
+```{r fig.width=4, fig.height=3}
+dim(purity)
+purity[1:2,]
+summary(purity$purity)
+purity = purity[!is.na(purity),]
+
+table(table(purity$sample))
+table(table(T_cell_info$sample))
+
+table(T_cell_info$sample %in% purity$sample)
+T_cell_info = merge(T_cell_info, purity, by="sample", 
+                    suffixes = c("", "_DNA"))
+T_cell_info[,T_cell_prop_adjusted := T_cell_prop * (1 - purity)]
+
+dim(T_cell_info)
+T_cell_info[1:2,]
+
+ggplot(data = T_cell_info, aes(x = purity)) +
+  geom_histogram(breaks = seq(0,1,by=0.02), 
+                 fill = "lightblue", color = "darkblue")
+
+ggplot(data = T_cell_info, aes(x = T_cell_prop_adjusted)) +
+  geom_histogram(breaks = seq(0,1,by=0.02), 
+                 fill = "lightblue", color = "darkblue")
+```
+
+## Check the association between TCR abundance and T cell proportion
+
+```{r fig.width=4, fig.height=3}
+setnames(TCR_rna, "AliquotBarcode", "barcode")
+TCR_rna_t_cell = merge(TCR_rna, T_cell_info, by = "barcode")
+dim(TCR_rna_t_cell)
+TCR_rna_t_cell[1:2,]
+
+summary(TCR_rna_t_cell$T_cell_prop_adjusted)
+summary(TCR_rna_t_cell$abundance)
+cor(TCR_rna_t_cell$T_cell_prop_adjusted, TCR_rna_t_cell$abundance, use="pair")
+cor(TCR_rna_t_cell$T_cell_prop_adjusted, log10(TCR_rna_t_cell$abundance), 
+    use="pair")
+
+cor(TCR_rna_t_cell$T_cell_prop_adjusted*TCR_rna_t_cell$read_depth, 
+    log10(TCR_rna_t_cell$abundance), use="pair")
+
+ggplot(data = TCR_rna_t_cell, mapping = aes(x = T_cell_prop_adjusted, 
+                                     y = log10(abundance))) +
+  geom_pointdensity() +
+  scale_color_viridis()
+```
+
+
+## Check whether we should filter out the samples with high tumor purity
+
+It looks like we do not need to filter by tumor purity. 
+
+```{r}
+table(TCR_rna_t_cell$purity <= 0.9)
+tapply(TCR_rna_t_cell$abundance, TCR_rna_t_cell$purity <= 0.9, summary)
+
+table(TCR_rna_t_cell$purity <= 0.95)
+tapply(TCR_rna_t_cell$abundance, TCR_rna_t_cell$purity <= 0.95, summary)
+
+table(TCR_rna_t_cell$purity <= 0.98)
+tapply(TCR_rna_t_cell$abundance, TCR_rna_t_cell$purity <= 0.98, summary)
+
+```
+
+# Prepare TCR data for association analysis
+
+## Aggregate the data per participant
+
+```{r}
+TCR_sample = data.table(TCR_sample)
+setnames(TCR_sample, "AliquotBarcode", "barcode")
+
+TCR_sample[, sample_type := substr(barcode, 14, 15)]
+TCR_sample[, participant := substr(barcode, 1, 12)]
+
+table(table(TCR_sample$participant))
+table(is.na(TCR_sample$abundance))
+
+dim(TCR_sample)
+TCR_sample[1:2,]
+
+TCR_sample = merge(TCR_sample, TCR_rna_t_cell[,c("barcode", "purity", 
+                                                 "T_cell_prop_adjusted")], 
+                   all.x = TRUE, all.y = FALSE)
+dim(TCR_sample)
+TCR_sample[1:2,]
+
+mean_na <- function(x){mean(x, na.rm = TRUE)}
+
+sample_info = TCR_sample[, .(abundance = sum(abundance), 
+                             purity = mean_na(purity), 
+                             T_cell_prop = mean_na(T_cell_prop_adjusted)), 
+                         by = participant]
+dim(sample_info)
+sample_info[1:2,]
+
+summary(sample_info$abundance)
+summary(sample_info$purity)
+summary(sample_info$T_cell_prop)
+
+TCR_participant = aggregate(abundance ~ Participant + aaSeq + chain, 
+                             TCR_uniq, sum)
+
+dim(TCR_uniq)
+dim(TCR_participant)
+TCR_participant[1:2,]
+
+sample_info[sample_info$participant == "TCGA-EE-A2GT"]
+sum(TCR_participant$abundance[TCR_participant$Participant == "TCGA-EE-A2GT"])
+
+nrow(unique(TCR_participant[,c("Participant", "aaSeq", "chain")]))
+
+table(TCR_uniq$chain, useNA='ifany')
+```
+
+## Separate TCRs by chain type, alpha chain
+
+```{r}
+TCR_alpha = TCR_participant[TCR_participant$chain == "alpha", ]
+dim(TCR_alpha)
+head(TCR_alpha)
+
+table(nchar(TCR_alpha$aaSeq))
+length(unique(TCR_alpha$Participant))
+summary(as.numeric(table(TCR_alpha$Participant)))
+
+alpha_freq = table(TCR_alpha$aaSeq)
+
+length(alpha_freq)
+table(alpha_freq == 1)/length(alpha_freq)
+table(alpha_freq >= 5)
+table(alpha_freq >= 10)
+
+alpha2kp = names(alpha_freq)[alpha_freq >= 5]
+length(alpha2kp)
+TCR_alpha = TCR_alpha[TCR_alpha$aaSeq %in% alpha2kp,]
+dim(TCR_alpha)
+head(TCR_alpha)
+summary(as.numeric(table(TCR_alpha$aaSeq)))
+
+nrow(unique(TCR_alpha[,c("Participant", "aaSeq")]))
+
+fnm = file.path(data_dir, "_processed_data/TCR_alpha_5.tsv")
+
+fwrite(TCR_alpha, file=fnm, sep="\t")
+```
+
+## Separate TCRs by chain type, beta chain
+
+```{r}
+TCR_beta = TCR_participant[TCR_participant$chain == "beta", ]
+dim(TCR_beta)
+head(TCR_beta)
+
+table(nchar(TCR_beta$aaSeq))
+length(unique(TCR_beta$Participant))
+summary(as.numeric(table(TCR_beta$Participant)))
+
+beta_freq = table(TCR_beta$aaSeq)
+
+length(beta_freq)
+table(beta_freq == 1)/length(beta_freq)
+table(beta_freq >= 5)
+table(beta_freq >= 10)
+
+beta2kp = names(beta_freq)[beta_freq >= 5]
+length(beta2kp)
+TCR_beta = TCR_beta[TCR_beta$aaSeq %in% beta2kp,]
+dim(TCR_beta)
+head(TCR_beta)
+summary(as.numeric(table(TCR_beta$aaSeq)))
+
+nrow(unique(TCR_beta[,c("Participant", "aaSeq")]))
+
+fnm = file.path(data_dir, "_processed_data/TCR_beta_5.tsv")
+
+fwrite(TCR_beta, file=fnm, sep="\t")
+```
+
+# Summarize somatic mutation data
+
+## Read in somatic mutation data
+
+Keep those mutations that satisfy the following two criteria.
+
+* filters is "PASS", "wga", or "native_wga_mix"
+* NCALLERS > 1
+
+```{r}
+mutation_file = "mc3.v0.2.8.CONTROLLED.maf.gz"
+test1 = fread(file.path(data_dir, mutation_file), nrows=5)
+dim(test1)
+names(test1)
+test1[1,]
+
+mut_dat = fread(file.path(data_dir, mutation_file), 
+                select = c("Hugo_Symbol", "NCBI_Build", "Chromosome", 
+                           "Start_Position", "End_Position", 
+                           "Strand", "Reference_Allele", 
+                           "Tumor_Seq_Allele1", "Tumor_Seq_Allele2", 
+                           "Variant_Classification", 
+                           "Variant_Type", "Gene", "Consequence", 
+                           "Tumor_Sample_Barcode", "HGVSc", "HGVSp", 
+                           "t_depth", "t_ref_count", 
+                           "t_alt_count", "FILTER", "CENTERS", "NCALLERS"))
+dim(mut_dat)
+mut_dat[1:2,]
+
+filters = c("PASS", "wga", "native_wga_mix")
+
+t1 = table(mut_dat$FILTER)
+sort(t1, decreasing = TRUE)[1:20]
+t1[names(t1) %in% filters]
+
+table(mut_dat$NCALLERS)
+table(mut_dat$FILTER %in% filters, mut_dat$NCALLERS > 1)
+
+mut_dat = mut_dat[FILTER %in% filters,]
+dim(mut_dat)
+table(mut_dat$FILTER, mut_dat$NCALLERS > 1)
+
+mut_dat = mut_dat[NCALLERS > 1,]
+dim(mut_dat)
+
+table(mut_dat$Reference_Allele == mut_dat$Tumor_Seq_Allele1)
+table(mut_dat$Reference_Allele == mut_dat$Tumor_Seq_Allele2)
+
+table(mut_dat$t_depth -  mut_dat$t_ref_count - mut_dat$t_alt_count)
+
+sort(table(mut_dat$Variant_Type))
+# ONP: Oncogenic Non-Passenger
+# TNP: Truncal Non-Passenger
+sort(table(mut_dat$Variant_Classification[mut_dat$Variant_Type=="ONP"]))
+sort(table(mut_dat$Variant_Classification[mut_dat$Variant_Type=="TNP"]))
+
+sort(table(mut_dat$Variant_Classification))
+sort(table(mut_dat$Consequence))
+
+table(mut_dat$Consequence[mut_dat$Variant_Classification=="5'Flank"])
+table(mut_dat$Consequence[mut_dat$Variant_Classification=="RNA"])
+table(mut_dat$Consequence[mut_dat$Variant_Classification=="Nonstop_Mutation"])
+
+table(mut_dat$Variant_Classification[mut_dat$Consequence=="stop_gained"])
+```
+
+## Filter out non-silent mutations
+
+```{r}
+mut_dat[,participant := substr(Tumor_Sample_Barcode, 1, 12)]
+mut_dat[,pos:=paste(Chromosome, Start_Position, sep=":")]
+mut_dat[,key:=paste(pos, Reference_Allele, Tumor_Seq_Allele2, sep=":")]
+
+dim(mut_dat)
+mut_dat[1:2,]
+
+mut_dat_uniq = unique(mut_dat[,c("Hugo_Symbol", "participant", "key")])
+dim(mut_dat_uniq)
+mut_dat_uniq[1:2,]
+
+stopifnot(nrow(mut_dat) == nrow(mut_dat_uniq))
+
+sample_info_mut = data.frame(table(mut_dat_uniq$participant))
+names(sample_info_mut) = c("participant", "n_mut")
+dim(sample_info_mut)
+sample_info_mut[1:2,]
+
+cat2kp = c("Nonstop_Mutation", "Translation_Start_Site", "In_Frame_Ins", 
+           "In_Frame_Del", "Splice_Site", "Nonsense_Mutation", 
+           "Frame_Shift_Ins", "Frame_Shift_Del", "Missense_Mutation")
+
+mut_dat = mut_dat[Variant_Classification %in% cat2kp,]
+dim(mut_dat)
+mut_dat[1:2,]
+
+mut_dat_uniq = unique(mut_dat[,c("Hugo_Symbol", "participant", "key")])
+dim(mut_dat_uniq)
+mut_dat_uniq[1:2,]
+stopifnot(nrow(mut_dat) == nrow(mut_dat_uniq))
+
+sample_info_mut2 = data.frame(table(mut_dat_uniq$participant))
+names(sample_info_mut2) = c("participant", "n_non_silent_mut")
+dim(sample_info_mut2)
+sample_info_mut2[1:2,]
+
+sample_info_mut = merge(sample_info_mut, sample_info_mut2, all.x=TRUE)
+dim(sample_info_mut)
+sample_info_mut[1:2,]
+
+is_na = is.na(sample_info_mut$n_non_silent_mut)
+table(is_na)
+sample_info_mut$n_non_silent_mut[which(is_na)] = 0
+
+summary(sample_info_mut$n_mut)
+summary(sample_info_mut$n_non_silent_mut)
+```
+
+
+## Add cancer type information
+
+Some patients can have multiple types of cancer and we exclude them here. 
+
+```{r}
+sq = fread(file.path(data_dir, "merged_sample_quality_annotations.tsv"))
+dim(sq)
+sq[1:2,]
+
+names(sq)[c(1,3)] = c("participant", "cancer_type")
+sq = unique(sq[,c("participant", "cancer_type")])
+dim(sq)
+sq[1:2,]
+
+t1 = table(sq$participant)
+table(t1)
+t1[t1> 1]
+
+sq[sq$participant == "TCGA-07-0227",]
+sq[sq$participant == "TCGA-44-6146",]
+
+sq = sq[sq$participant %in% names(t1)[t1==1],]
+
+table(sample_info_mut$participant %in% sq$participant)
+sample_info_mut = merge(sample_info_mut, sq)
+dim(sample_info_mut)
+sample_info_mut[1:2,]
+
+dim(mut_dat)
+mut_dat = mut_dat[participant %in% sample_info_mut$participant, ]
+dim(mut_dat)
+mut_dat[1:2,]
+
+mut_dat_uniq = unique(mut_dat[,c("Hugo_Symbol", "participant", "key")])
+dim(mut_dat_uniq)
+mut_dat_uniq[1:2,]
+
+stopifnot(nrow(mut_dat) == nrow(mut_dat_uniq))
+```
+
+## Select unique combination of gene and participant
+
+```{r}
+table(is.na(mut_dat$Hugo_Symbol))
+table(mut_dat$Hugo_Symbol == "")
+length(unique(mut_dat$Hugo_Symbol))
+
+mut_dat_gene = unique(mut_dat_uniq[,c("participant", "Hugo_Symbol")])
+dim(mut_dat_gene)
+mut_dat_gene[1:2,]
+
+t3 = table(mut_dat_gene$Hugo_Symbol)
+summary(as.numeric(t3))
+sort(t3, decreasing = TRUE)[1:20]
+
+t2 = table(mut_dat_uniq$key)
+table(t2 == 1)
+table(t2 == 2)
+table(t2 >= 5)
+
+summary(as.numeric(t2))
+
+mut_dat_uniq = mut_dat_uniq[key %in% names(t2)[t2 >= 5],]
+mut_dat_uniq[,key := paste(Hugo_Symbol, key, sep=":")]
+mut_dat_uniq[,Hugo_Symbol := NULL]
+dim(mut_dat_uniq)
+mut_dat_uniq[1:2,]
+
+t2 = table(mut_dat_uniq$key)
+summary(as.numeric(t2))
+sort(t2, decreasing = TRUE)[1:20]
+
+fnm = file.path(data_dir, "_processed_data/mutation_gene_all.tsv")
+fwrite(mut_dat_gene, file=fnm, sep="\t")
+
+fnm = file.path(data_dir, "_processed_data/mutation_freq_geq_5.tsv")
+fwrite(mut_dat_uniq, file=fnm, sep="\t")
+```
+
+
+## Save sample information
+
+```{r}
+dim(sample_info)
+sample_info[1:2,]
+
+fnm = file.path(data_dir, "_processed_data/sample_info.tsv")
+fwrite(sample_info, file=fnm, sep="\t")
+
+dim(sample_info_mut)
+sample_info_mut[1:2,]
+
+fnm = file.path(data_dir, "_processed_data/sample_info_mutations.tsv")
+fwrite(sample_info_mut, file=fnm, sep="\t")
+```
+
+## Check mutation frequency of genes
+
+```{r}
+df1 = data.frame(table(mut_dat_gene$Hugo_Symbol))
+names(df1) = c("Gene", "Freq")
+n_patient = length(unique(mut_dat_gene$participant))
+n_patient
+df1$percent_mutation = df1$Freq / n_patient
+df1 = df1[order(df1$percent_mutation, decreasing = TRUE),]
+dim(df1)
+df1[1:20,,drop=FALSE]
+
+df1$percent_mutation[df1$percent_mutation > 0.16] = 0.16
+ggplot(data = df1, aes(x = percent_mutation)) +
+  geom_histogram(breaks = seq(0, 0.16, by=0.005), 
+                 fill = "lightblue", color = "darkblue")
+
+```
+ 
+## Check mutation frequency of individual mutations
+
+```{r}
+df1 = data.frame(table(mut_dat_uniq$key))
+names(df1) = c("Mutation", "Freq")
+df1$percent_mutation = df1$Freq / n_patient
+df1 = df1[order(df1$percent_mutation, decreasing = TRUE),]
+dim(df1)
+df1[1:20,,drop=FALSE]
+
+summary(df1$percent_mutation)
+summary(log10(df1$percent_mutation))
+
+ggplot(data = df1, aes(x = log10(percent_mutation))) +
+  geom_histogram(fill = "lightblue", color = "darkblue")
+
+```
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+

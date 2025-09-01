@@ -1,0 +1,186 @@
+---
+title: "Get CDR3 sequences from Decombinator outputs"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/fh/fast/sun_w/yub/tcr/tracerx/tcr-seq')
+library(dplyr)
+library(ggpubr)
+library(pbmcapply)
+```
+
+## Load meta data
+
+```{r Load meta data}
+meta = as_tibble(data.table::fread('SraRunTable.csv'))
+meta = tibble(
+  file_id = meta[['Run']], 
+  sample_name = meta[['Sample Name']], 
+  tissue = meta[['tissue']]
+)
+meta$tumor = sapply(strsplit(meta$sample_name, '_'), head, n = 1)
+table(meta$tissue)
+spacer = readRDS('spacer.rds')
+```
+
+## Load TCR
+
+```{r}
+load_decombinator_result <- function(tsv) {
+  raw <- as_tibble(data.table::fread(tsv))
+  chain <- ifelse(grepl("_alpha\\.tsv$", tsv, ignore.case = TRUE), "A", "B")
+  raw |>
+    filter(productive == "T") |>
+    select(
+      cdr3_aa  = junction_aa,
+      cdr3_nt  = junction,
+      V        = v_call,
+      J        = j_call,
+      count    = duplicate_count
+    ) |>
+    group_by(cdr3_aa) |>          # Merge CDR3 counts from different V, J genes
+    summarise(count = sum(count), .groups = "drop") |>
+    mutate(chain = chain)
+}
+```
+
+```{r Load Decombinator results}
+decombinator_files = as.vector(unlist(plyr::alply(spacer, 1, function(x) {
+  folder = ifelse(x$spacer == 'i8', 'decombinator_results_I8', 'decombinator_results_M13')
+  file.path(folder, x$file)
+})))
+tcr = Reduce(rbind, pbmcmapply(function(file) {
+  data = load_decombinator_result(file)
+  file_id = strsplit(file, '_')[[1]][4]
+  sample_name = meta$sample_name[match(file_id, meta$file_id)]
+  tumor = strsplit(sample_name, '_')[[1]][1]
+  tibble(tumor = tumor, file_id = file_id, sample_name = sample_name, data)
+}, decombinator_files, SIMPLIFY = F, mc.cores = 30))
+tcr$tissue = meta$tissue[match(tcr$file_id, meta$file_id)]
+# Distinguish same AA sequences from different chains
+tcr$tcr_id = paste0(tcr$cdr3_aa, '_', tcr$chain)
+```
+
+## QC
+
+```{r}
+# AA sequnce compositions
+table(unlist(strsplit(tcr$cdr3_aa, '')))
+# Length of AA sequences
+table(nchar(tcr$cdr3_aa))
+tcr = tcr |> filter(nchar(cdr3_aa) >= 5)
+```
+
+## Summary
+
+```{r}
+# Number of tumors
+length(unique(tcr$tumor))
+# Number of alpha chain TCRs
+length(unique(tcr$cdr3_aa[tcr$chain == 'A']))
+# Number of beta chain TCRs
+length(unique(tcr$cdr3_aa[tcr$chain == 'B']))
+```
+
+```{r}
+# Number of tumors per TCR
+plot_data = tcr |> 
+  group_by(cdr3_aa, chain) |> 
+  summarise(ntumor = length(unique(tumor)), .groups = 'drop')
+ggplot(plot_data, aes(ntumor, fill = chain)) +
+  geom_histogram(aes(y = log10(after_stat(count))), position = position_stack(), binwidth = 1) +
+  labs(fill = '', x = 'Number of tumors per TCR', y = 'log10(count)') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+```
+
+```{r}
+# TCR frequency
+plot_data = tcr |> 
+  group_by(cdr3_aa, chain) |> 
+  summarise(freq = sum(count), .groups = 'drop')
+ggplot(plot_data, aes(freq, fill = chain)) +
+  scale_x_log10() +
+  geom_histogram(position = position_stack()) +
+  labs(fill = '', x = 'TCR frequency') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+```
+
+```{r}
+# Number of TCRs per tumor
+plot_data = tcr |> 
+  group_by(tumor, chain) |> 
+  summarise(ntcr = sum(count), .groups = 'drop')
+ggplot(plot_data, aes(ntcr, fill = chain)) +
+  geom_histogram(position = position_stack()) +
+  scale_x_log10() +
+  labs(x = 'Number of TCRs per tumor', fill = '') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+```
+
+```{r}
+# Number of unique TCRs per tumor
+plot_data = tcr |> 
+  group_by(tumor, chain) |> 
+  summarise(ntcr = length(unique(cdr3_aa)), .groups = 'drop')
+ggplot(plot_data, aes(ntcr, fill = chain)) +
+  geom_histogram(position = position_stack()) +
+  scale_x_log10() +
+  labs(color = '', x = 'Number of unique TCRs per tumor') +
+  scale_fill_viridis_d(breaks = c('A', 'B'), labels = c('alpha chain', 'beta chain')) +
+  theme_pubr()
+```
+
+## Build TCR matrix: only tumors
+
+```{r Build TCR matrix: only tumors}
+tcr_tumor = tcr |> 
+  filter(tissue == 'Lung tumour') |>
+  group_by(tumor, tcr_id) |>
+  summarise(count = sum(count), .groups = 'drop')
+tumors = sort(unique(tcr_tumor$tumor))
+tcrs = sort(unique(tcr_tumor$tcr_id))
+mat_tumor = Matrix::sparseMatrix(
+  i = match(tcr_tumor$tumor, tumors),
+  j = match(tcr_tumor$tcr_id, tcrs),
+  x = tcr_tumor$count,
+  dims = c(length(tumors), length(tcrs)),
+  dimnames = list(tumors, tcrs)
+)
+dim(mat_tumor)
+```
+
+## Build TCR matrix: including blood
+
+```{r Build TCR matrix: including blood}
+tcr_blood = tcr |> 
+  filter(tissue %in% c('Lung tumour', 'Blood')) |>
+  group_by(tumor, tcr_id) |>
+  summarise(count = sum(count), .groups = 'drop')
+tumors = sort(unique(tcr_blood$tumor))
+tcrs = sort(unique(tcr_blood$tcr_id))
+mat_blood = Matrix::sparseMatrix(
+  i = match(tcr_blood$tumor, tumors),
+  j = match(tcr_blood$tcr_id, tcrs),
+  x = tcr_blood$count,
+  dims = c(length(tumors), length(tcrs)),
+  dimnames = list(tumors, tcrs)
+)
+dim(mat_blood)
+```
+
+## Save
+
+```{r}
+saveRDS(tcr, file = 'df_tcr.rds')
+saveRDS(mat_tumor, file = 'mat_tcr_tumor.rds')
+saveRDS(mat_blood, file = 'mat_tcr_tumor_blood.rds')
+sessionInfo()
+```

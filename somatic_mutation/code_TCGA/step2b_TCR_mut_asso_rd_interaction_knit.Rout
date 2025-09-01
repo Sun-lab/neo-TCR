@@ -1,0 +1,120 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: aarch64-apple-darwin20 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> 
+> # Sys.setenv(RSTUDIO_PANDOC="/app/software/RStudio-Server/1.4.1717-foss-2021b-Java-11-R-4.1.2/bin/pandoc")
+> # Sys.setenv(RSTUDIO_PANDOC="/Applications/RStudio.app/Contents/MacOS/pandoc")
+> Sys.setenv(RSTUDIO_PANDOC="/opt/homebrew/bin")
+> 
+> 
+> library(rmarkdown)
+> 
+> rmarkdown::render("step2b_TCR_mut_asso_rd_interaction.Rmd", 
++                   params = list(chain = "alpha"),
++                   output_file = "step2b_TCR_alpha_mut_asso_rd_interaction.html")
+
+
+processing file: step2b_TCR_mut_asso_rd_interaction.Rmd
+1/15                  
+2/15 [setup]          
+3/15                  
+4/15 [unnamed-chunk-1]
+5/15                  
+6/15 [unnamed-chunk-2]
+7/15                  
+8/15 [unnamed-chunk-3]
+9/15                  
+10/15 [unnamed-chunk-4]
+11/15                  
+12/15 [unnamed-chunk-5]
+13/15                  
+14/15 [unnamed-chunk-6]
+15/15                  
+output file: step2b_TCR_mut_asso_rd_interaction.knit.md
+
+/opt/homebrew/bin/pandoc +RTS -K512m -RTS step2b_TCR_mut_asso_rd_interaction.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output step2b_TCR_alpha_mut_asso_rd_interaction.html --lua-filter /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library/rmarkdown/rmarkdown/lua/latex-div.lua --embed-resources --standalone --variable bs3=TRUE --section-divs --table-of-contents --toc-depth 3 --variable toc_float=1 --variable toc_selectors=h1,h2,h3 --variable toc_collapsed=1 --variable toc_print=1 --template /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library/rmarkdown/rmd/h/default.html --highlight-style tango --variable theme=journal --mathjax --variable 'mathjax-url=https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' --include-in-header /var/folders/fk/gk1pvdpx7fz79tx26t0rjc7c0000gp/T//RtmpVqu16v/rmarkdown-str4d714cf684ee.html 
+
+Output created: step2b_TCR_alpha_mut_asso_rd_interaction.html
+>   
+> rmarkdown::render("step2b_TCR_mut_asso_rd_interaction.Rmd", 
++                   params = list(chain = "beta"),
++                   output_file = "step2b_TCR_beta_mut_asso_rd_interaction.html")
+
+
+processing file: step2b_TCR_mut_asso_rd_interaction.Rmd
+1/15                  
+2/15 [setup]          
+3/15                  
+4/15 [unnamed-chunk-1]
+5/15                  
+6/15 [unnamed-chunk-2]
+7/15                  
+8/15 [unnamed-chunk-3]
+9/15                  
+10/15 [unnamed-chunk-4]
+11/15                  
+12/15 [unnamed-chunk-5]
+13/15                  
+14/15 [unnamed-chunk-6]
+15/15                  
+output file: step2b_TCR_mut_asso_rd_interaction.knit.md
+
+/opt/homebrew/bin/pandoc +RTS -K512m -RTS step2b_TCR_mut_asso_rd_interaction.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output step2b_TCR_beta_mut_asso_rd_interaction.html --lua-filter /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library/rmarkdown/rmarkdown/lua/latex-div.lua --embed-resources --standalone --variable bs3=TRUE --section-divs --table-of-contents --toc-depth 3 --variable toc_float=1 --variable toc_selectors=h1,h2,h3 --variable toc_collapsed=1 --variable toc_print=1 --template /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/library/rmarkdown/rmd/h/default.html --highlight-style tango --variable theme=journal --mathjax --variable 'mathjax-url=https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' --include-in-header /var/folders/fk/gk1pvdpx7fz79tx26t0rjc7c0000gp/T//RtmpVqu16v/rmarkdown-str4d7118699a80.html 
+
+Output created: step2b_TCR_beta_mut_asso_rd_interaction.html
+> 
+> sessionInfo()
+R version 4.2.3 (2023-03-15)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS Ventura 13.4.1
+
+Matrix products: default
+BLAS:   /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRblas.0.dylib
+LAPACK: /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRlapack.dylib
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+attached base packages:
+[1] parallel  stats     graphics  grDevices utils     datasets  methods  
+[8] base     
+
+other attached packages:
+ [1] qvalue_2.30.0        doParallel_1.0.17    iterators_1.0.14    
+ [4] foreach_1.5.2        viridis_0.6.2        viridisLite_0.4.1   
+ [7] ggpointdensity_0.1.0 ggplot2_3.4.2        dplyr_1.1.2         
+[10] tibble_3.2.1         data.table_1.14.8    rmarkdown_2.21      
+
+loaded via a namespace (and not attached):
+ [1] Rcpp_1.0.10      plyr_1.8.8       pillar_1.9.0     bslib_0.4.2     
+ [5] compiler_4.2.3   jquerylib_0.1.4  tools_4.2.3      digest_0.6.31   
+ [9] jsonlite_1.8.4   evaluate_0.20    lifecycle_1.0.3  gtable_0.3.3    
+[13] pkgconfig_2.0.3  rlang_1.1.0      cli_3.6.1        rstudioapi_0.14 
+[17] yaml_2.3.7       xfun_0.39        fastmap_1.1.1    gridExtra_2.3   
+[21] stringr_1.5.0    withr_2.5.0      knitr_1.44       generics_0.1.3  
+[25] vctrs_0.6.2      sass_0.4.5       grid_4.2.3       tidyselect_1.2.0
+[29] glue_1.6.2       R6_2.5.1         fansi_1.0.4      reshape2_1.4.4  
+[33] magrittr_2.0.3   splines_4.2.3    codetools_0.2-19 scales_1.2.1    
+[37] htmltools_0.5.5  colorspace_2.1-0 utf8_1.2.3       stringi_1.7.12  
+[41] munsell_0.5.0    cachem_1.0.7    
+> 
+> q(save = "no")
+> proc.time()
+     user    system   elapsed 
+342700.02  72267.11  42436.97 

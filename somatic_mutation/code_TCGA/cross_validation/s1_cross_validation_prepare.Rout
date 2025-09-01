@@ -1,0 +1,90 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: aarch64-apple-darwin20 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> 
+> library(data.table)
+> data_dir = "~/research/data/TCR/TCGA/_processed_data"
+> 
+> sample_ins = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+> 
+> tbl_cts = table(sample_ins[["cancer_type"]])
+> sort(tbl_cts)
+
+CHOL  ACC DLBC  UCS KICH  UVM MESO PCPG THYM READ TGCT  GBM PAAD ESCA SARC  LGG 
+  32   37   37   40   43   48   78  114  118  119  140  145  157  179  196  221 
+KIRP CESC   OV LIHC BLCA KIRC COAD STAD SKCM THCA LUSC HNSC PRAD UCEC LUAD BRCA 
+ 248  268  279  299  346  350  361  406  427  449  452  467  469  473  501  964 
+> 
+> tbl_cts = tbl_cts[tbl_cts > 100]
+> tbl_cts = as.data.frame(tbl_cts)
+> tbl_cts
+   Var1 Freq
+1  BLCA  346
+2  BRCA  964
+3  CESC  268
+4  COAD  361
+5  ESCA  179
+6   GBM  145
+7  HNSC  467
+8  KIRC  350
+9  KIRP  248
+10  LGG  221
+11 LIHC  299
+12 LUAD  501
+13 LUSC  452
+14   OV  279
+15 PAAD  157
+16 PCPG  114
+17 PRAD  469
+18 READ  119
+19 SARC  196
+20 SKCM  427
+21 STAD  406
+22 TGCT  140
+23 THCA  449
+24 THYM  118
+25 UCEC  473
+> 
+> cat(as.character(tbl_cts$Var1), file="cancer_types.tsv", sep="\n")
+> 
+> sessionInfo()
+R version 4.2.3 (2023-03-15)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS Ventura 13.4.1
+
+Matrix products: default
+BLAS:   /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRblas.0.dylib
+LAPACK: /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRlapack.dylib
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] data.table_1.14.8
+
+loaded via a namespace (and not attached):
+[1] compiler_4.2.3
+> 
+> q(save = "no")
+> proc.time()
+   user  system elapsed 
+  0.110   0.027   0.384 
