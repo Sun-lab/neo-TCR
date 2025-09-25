@@ -76,6 +76,8 @@ The output item is a list of two elements, under the given chain type, somatic m
 
 The process of sourcing R files in order to load the function will load the following objects as listed in the screenshot below into R workspace:
 
-![loaded_objects](screenshot_loaded_objects.png)
+<p align="center">
+  <img src="screenshot_loaded_objects" width="80%" alt="loaded_objects">
+</p>
 
 Additional attention may be needed to avoid them having conflict with objects used in current workspace.
