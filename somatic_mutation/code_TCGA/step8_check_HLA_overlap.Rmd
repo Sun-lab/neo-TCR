@@ -1,0 +1,1164 @@
+---
+title: "Check whether samples with mutation-associated TCRs tend to have one HLA allele"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+params:
+  pcut_A: 0.10
+  pcut_B: 0.20
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(pROC)
+library(ROCR)
+library(ggrepel)
+theme_set(theme_classic())
+source("_utilities.R")
+
+data_dir   = "~/research/data/TCR/TCGA/_processed_data"
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+pcut_A = as.numeric(params$pcut_A)
+pcut_B = as.numeric(params$pcut_B)
+
+pcut_A
+pcut_B
+```
+
+# Read in data
+
+## Read in TCR data
+
+```{r}
+chain = "beta"
+
+TCR_data   = fread(file.path(data_dir, sprintf("TCR_%s_5.tsv", chain)))
+mut_data   = fread(file.path(data_dir, "mutation_freq_geq_5.tsv"))
+sample_info = fread(file.path(data_dir, "sample_info_intersection.tsv"))
+
+dim(TCR_data)
+dim(mut_data)
+dim(sample_info)
+
+head(TCR_data)
+head(mut_data)
+head(sample_info)
+
+participants = sample_info$participant
+
+TCR_mat = get_TCR_matrix(TCR_data, participants)
+mut_mat = get_mut_matrix(mut_data, participants)
+
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+
+dim(mut_mat)
+mut_mat[1:2,1:3]
+
+stopifnot(setequal(participants, colnames(TCR_mat)))
+stopifnot(setequal(participants, colnames(mut_mat)))
+
+TCR_mat = TCR_mat[,match(participants, colnames(TCR_mat))]
+mut_mat = mut_mat[,match(participants, colnames(mut_mat))]
+
+```
+
+
+## Read in HLA
+
+Check the consistency of HLA-I alleles from TCGA vs. those from a TCGA HLA benchmark study. The latter also have the data for HLA-II alleles.
+
+```{r}
+library(readxl)
+library(dplyr)
+
+HLA = fread("~/research/data/TCR/TCGA/OptiTypeCallsHLA_20171207.tsv")
+dim(HLA)
+HLA[1:2,]
+
+HLA$Sample_Barcode = substr(HLA$aliquot_id, 1, 12)
+table(table(HLA$Sample_Barcode))
+
+HLA$Sample_Type = substr(HLA$aliquot_id, 14, 15)
+table(HLA$Sample_Type)
+
+HLA1 <- HLA %>%
+  group_by(Sample_Barcode) %>%
+  slice_max(Objective, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+dim(HLA1)
+table(table(HLA1$Sample_Barcode))
+table(HLA1$Sample_Type)
+
+fpath = "~/research/GitHub/_others/TCGA_HLA_benchmark/HLA_allele_data/"
+HLA2 = read_excel(paste0(fpath, "TCGA_HLA_benchmark_20200810.xlsx"), 
+                  sheet = "HLA_genotyping")
+HLA2 = as.data.frame(HLA2)
+dim(HLA2)
+HLA2[1:2,]
+
+length(unique(HLA2$Sample_Barcode))
+
+table(HLA1$Sample_Barcode %in% HLA2$Sample_Barcode)
+table(HLA2$Sample_Barcode %in% HLA1$Sample_Barcode)
+
+# Join the tables on Sample_Barcode
+df <- HLA1 %>%
+  inner_join(HLA2, by = "Sample_Barcode")
+dim(df)
+
+hla_match <- df %>%
+  rowwise() %>%
+  mutate(
+    same_A = setequal(sort(str_extract_all(HLA_ClassI, "A\\*\\d+:\\d+")[[1]]), 
+                      sort(unique(c(A1, A2)))),
+    same_B = setequal(sort(str_extract_all(HLA_ClassI, "B\\*\\d+:\\d+")[[1]]), 
+                      sort(unique(c(B1, B2)))),
+    same_C = setequal(sort(str_extract_all(HLA_ClassI, "C\\*\\d+:\\d+")[[1]]), 
+                      sort(unique(c(C1, C2))))
+  ) %>%
+  ungroup() %>%
+  select(Sample_Barcode, same_A, same_B, same_C)
+
+dim(hla_match)
+hla_match[1:2,]
+
+table(hla_match$same_A)
+table(hla_match$same_B)
+table(hla_match$same_C)
+
+```
+
+## Get HLA data matrix
+
+```{r}
+hla_I_matrix <- HLA2[,c("Sample_Barcode", "HLA_ClassI")] %>%
+  # Split the HLA_ClassI column into separate rows for each allele
+  separate_rows(HLA_ClassI, sep = "\\|") %>%
+  # Mark presence of each allele with 1
+  mutate(value = 1) %>%
+  # Pivot to create a wide matrix: rows = alleles, columns = Sample_Barcode
+  pivot_wider(names_from = Sample_Barcode, values_from = value,
+              values_fill = list(value = 0)) %>%
+  # Optionally sort by allele name
+  arrange(HLA_ClassI)
+
+dim(hla_I_matrix)
+hla_I_matrix[1:2,1:4]
+
+names(HLA2)[names(HLA2) == "HLA-ClassII"] = "HLA_ClassII"
+hla_II_matrix <- HLA2[,c("Sample_Barcode", "HLA_ClassII")] %>%
+  separate_rows(HLA_ClassII, sep = "\\|") %>%
+  mutate(value = 1) %>%
+  pivot_wider(names_from = Sample_Barcode, values_from = value,
+              values_fill = list(value = 0)) %>%
+  arrange(HLA_ClassII)
+
+dim(hla_II_matrix)
+hla_II_matrix[1:2,1:4]
+
+hla1_ex = hla_I_matrix$HLA_ClassI[which(hla_I_matrix$`TCGA-DD-AAVP` > 0)]
+hla2_ex = hla_II_matrix$HLA_ClassII[which(hla_II_matrix$`TCGA-DD-AAVP` > 0)]
+
+hla1_ex
+hla2_ex
+
+HLA2[HLA2$Sample_Barcode == "TCGA-DD-AAVP",]
+```
+
+
+# Check prediction by TCR
+
+## Load prediction model
+
+```{r}
+fnm = sprintf("TCGA_res_TCR_predictors_pval_pA_%.1e_pB_%.1e.rds", pcut_A, pcut_B)
+TCR_pred = readRDS(file = file.path(result_dir, fnm))
+length(TCR_pred)
+names(TCR_pred)[1:5]
+```
+
+## Update mutation names
+
+```{r}
+mut_info = fread("~/research/data/TCR/TCGA/_processed_data/mutation_info.tsv", 
+                 sep = "\t")
+dim(mut_info)
+mut_info[1:2,]
+mut_info[,key_dna := paste(Hugo_Symbol, key, sep=":")]
+stopifnot(all(names(TCR_pred) %in% mut_info$key_dna))
+
+mut_info = mut_info[match(names(TCR_pred), mut_info$key_dna),]
+dim(mut_info)
+mut_info[51:60,]
+
+mut_info[,key_pro := paste(Hugo_Symbol, 
+                           gsub("p.", "", HGVSp_Short, fixed = TRUE), sep=":")]
+dim(mut_info)
+mut_info[1:2,]
+
+table(names(TCR_pred) == mut_info$key_dna)
+names(TCR_pred) = mut_info$key_pro
+```
+
+## Read in konwn neoantigens
+```{r fig.width = 4, fig.height = 4}
+known_neoantigen = fread("../data/konwn_public_neoantigen.csv")
+known_neoantigen[,mutation := gsub(":p.", ":", key, fixed = TRUE)]
+
+dim(known_neoantigen)
+known_neoantigen[1:2,]
+```
+
+## Check number of TCRs per mutation
+
+```{r fig.width = 4, fig.height = 4}
+nTCR_A = sapply(TCR_pred, function(v){length(v$TCRA)})
+nTCR_B = sapply(TCR_pred, function(v){length(v$TCRB)})
+length(nTCR_A)
+length(nTCR_B)
+
+summary(nTCR_A)
+summary(nTCR_B)
+
+stopifnot(all(names(nTCR_A) == names(nTCR_B)))
+
+df = data.table(mutation = names(nTCR_A), nTCRA = nTCR_A, nTCRB = nTCR_B)
+df[,neoantigne:=mutation %in% known_neoantigen$mutation]
+dim(df)
+df[1:2,]
+
+table(df$neoantigne)
+
+stopifnot(all(df$mutation == mut_info$key_pro))
+df$Variant_Classification = mut_info$Variant_Classification
+
+library(ggplot2)
+library(ggExtra)
+
+tick_labels <- c(0, 1, 5, 10, 50, 100)
+
+p <- ggplot(df, aes(x = log10(nTCRA + 1), y = log10(nTCRB + 1))) +
+  # all points in grey
+  geom_point(data = subset(df, neoantigne == FALSE), 
+             color = "grey", alpha = 0.6) +
+  # highlight neoantigen points in red on top
+  geom_point(data = subset(df, neoantigne == TRUE), 
+             color = "red", alpha = 0.8, size = 2) +
+  theme_minimal() +
+  labs(
+    x = "nTCRA",
+    y = "nTCRB"
+  ) +
+  scale_x_continuous(
+    breaks = log10(tick_labels + 1),
+    labels = tick_labels
+  ) +
+  scale_y_continuous(
+    breaks = log10(tick_labels + 1),
+    labels = tick_labels
+  ) +
+  geom_hline(yintercept = log10(10 + 1), color = "red", linetype = "dashed") +
+  geom_vline(xintercept = log10(30 + 1), color = "red", linetype = "dashed")
+
+ggMarginal(p, type = "histogram", bins = 30, fill = "lightgreen", color = "black")
+
+table(df$nTCRA >= 30, df$nTCRB >= 10)
+df[nTCRA >=30 & nTCRB >= 10,]
+
+tapply(df$Variant_Classification, df$nTCRA >=30, table)
+tapply(df$Variant_Classification, df$nTCRB >=10, table)
+
+mut2check = as.character(unlist(df[nTCRA >= 30 & nTCRB >= 10, "mutation"]))
+
+tapply(df$Variant_Classification, df$nTCRA >=30 & df$nTCRB >=10, table)
+```
+
+
+```{r fig.width = 5, fig.height = 3}
+df2 <- as.data.frame(df)
+
+# 1) Define the 4 groups by thresholds
+df2 <- df2 %>%
+  mutate(
+    Group = case_when(
+      nTCRA >= 30 & nTCRB >= 10 ~ "G4: TCRA≥30 & TCRB≥10",
+      nTCRA >= 30 & nTCRB <  10 ~ "G3: TCRA≥30 & TCRB<10",
+      nTCRA <  30 & nTCRB >= 10 ~ "G2: TCRA<30 & TCRB≥10",
+      TRUE                      ~ "G1: TCRA<30 & TCRB<10"
+    )
+  )
+
+# 2) Collapse Variant_Classification into 4 categories
+df2 <- df2 %>%
+  mutate(Category = case_when(
+    Variant_Classification == "Frame_Shift_Del"   ~ "Frame Shift Del",
+    Variant_Classification == "Missense_Mutation" ~ "Missense Mut.",
+    Variant_Classification == "Nonsense_Mutation" ~ "Nonsense Mut.",
+    TRUE                                          ~ "Other"
+  ))
+
+# Set desired factor orders
+df2$Category <- factor(df2$Category,
+                       levels = c("Frame Shift Del","Missense Mut.",
+                                  "Nonsense Mut.","Other"))
+df2$Group <- factor(df2$Group,
+                    levels = c("G1: TCRA<30 & TCRB<10",
+                               "G2: TCRA<30 & TCRB≥10",
+                               "G3: TCRA≥30 & TCRB<10",
+                               "G4: TCRA≥30 & TCRB≥10"))
+
+table(df2$Group, df2$Category)
+
+# 3) Relative frequencies within each Group
+rel_freq <- df2 %>%
+  count(Group, Category, name = "n") %>%
+  group_by(Group) %>%
+  mutate(freq = n / sum(n)) %>%
+  ungroup() %>%
+  complete(Group, Category, fill = list(n = 0, freq = 0))  
+
+# 4) Grouped barplot (four x-groups = categories; 4 bars within each = Groups)
+ggplot(rel_freq, aes(x = Category, y = freq, fill = Group)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      "G1: TCRA<30 & TCRB<10"   = "grey70", # orange
+      "G2: TCRA<30 & TCRB≥10"   = "#56B4E9", # sky blue
+      "G3: TCRA≥30 & TCRB<10"   = "#009E73", # bluish green
+      "G4: TCRA≥30 & TCRB≥10"   = "#D55E00"  # vermilion
+    )
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = NULL,   # remove x-axis title
+    y = "Relative frequency"
+  ) + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+```{r fig.width = 2, fig.height = 2.5}
+counts <- as.data.frame(table(df2$Group))
+colnames(counts) <- c("Group", "Count")
+
+quad_df <- data.frame(
+  xmin = c(0, 0, 30, 30),
+  xmax = c(30, 30, 60, 60),
+  ymin = c(0, 10, 0, 10),
+  ymax = c(10, 20, 10, 20),
+  Group = c(
+    "G1: TCRA<30 & TCRB<10",
+    "G2: TCRA<30 & TCRB≥10",
+    "G3: TCRA≥30 & TCRB<10",
+    "G4: TCRA≥30 & TCRB≥10"
+  )
+)
+
+quad_df2 <- merge(quad_df, counts, by = "Group")
+
+# midpoints for labels
+quad_df2$xmid <- (quad_df2$xmin + quad_df2$xmax) / 2
+quad_df2$ymid <- (quad_df2$ymin + quad_df2$ymax) / 2
+
+ggplot(quad_df2) +
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = Group),
+            color = "white") +
+  geom_text(aes(x = xmid, y = ymid, label = Count), size = 3) +
+  scale_fill_manual(
+    values = c(
+      "G1: TCRA<30 & TCRB<10"   = "grey70",   # grey
+      "G2: TCRA<30 & TCRB≥10"   = "#56B4E9", # sky blue
+      "G3: TCRA≥30 & TCRB<10"   = "#009E73", # bluish green
+      "G4: TCRA≥30 & TCRB≥10"   = "#D55E00"  # vermilion
+    )
+  ) +
+  scale_x_continuous(breaks = c(0, 30), limits = c(0, 60)) +
+  scale_y_continuous(breaks = c(0, 10), limits = c(0, 20)) +
+  coord_fixed() +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = "# of alpha chains",
+    y = "# of beta chains"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none"
+  )
+
+```
+
+## Identify a short list of somatic mutations that are more likely to harbor neoantigens
+
+```{r fig.width = 5, fig.height = 3}
+
+stopifnot(setequal(df$mutation, mut_info$key_pro))
+df = merge(df, mut_info[,.(key_pro, Freq)], by.x = "mutation", by.y = "key_pro")
+dim(df)
+df[1:2,]
+
+table(df$nTCRA >= 50, df$nTCRB >= 30)
+df[nTCRA >=50 & nTCRB >= 30,]
+
+fwrite(df, file = file.path(result_dir, "step8_mutation_by_nTCR.tsv"), 
+       sep = "\t")
+
+
+```
+
+
+## Check prediction AUCs to prioritize somatic mutations
+
+```{r fig.width = 4, fig.height = 3.5}
+AUC_liberal = fread(file.path(result_dir, 
+                              "TCGA_res_AUC_pA_1.0e-01_pB_2.0e-01.tsv"))
+dim(AUC_liberal)
+
+AUC_intermediate = fread(file.path(result_dir, 
+                              "TCGA_res_AUC_pA_5.0e-02_pB_1.0e-01.tsv"))
+dim(AUC_intermediate)
+
+AUC_stringent = fread(file.path(result_dir, 
+                              "TCGA_res_AUC_pA_1.0e-02_pB_5.0e-02.tsv"))
+dim(AUC_stringent)
+
+AUC_stringent[1:2,]
+AUC_liberal[1:2,]
+
+AUC = merge(AUC_intermediate, AUC_stringent, by = "mut", 
+            suffixes = c("_intm", "_strg"))
+
+dim(AUC)
+AUC[1:2,]
+
+AUC = merge(AUC, AUC_liberal, by = "mut", 
+            suffixes = c("", "_libr"))
+
+dim(AUC)
+AUC[1:2,]
+
+AUC <- mut_info[, .(key_dna, key_pro)][AUC, on = .(key_dna = mut)]
+dim(AUC)
+AUC[1:2,]
+
+AUC[key_pro == "BRAF:V600E",]
+
+summary(AUC$n_alpha)
+summary(AUC$n_beta)
+
+AUC[is.na(n_alpha), n_alpha := 0]
+AUC[is.na(n_beta), n_beta := 0]
+
+summary(AUC$n_beta)
+
+ggplot(AUC, aes(x = auc_beta_intm, y = auc_beta, color = log10(n_beta + 1))) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  scale_color_viridis_c(
+    option = "plasma",
+    breaks = log10(c(1, 10, 100) + 1),
+    labels = c("1", "10", "100")
+  ) +
+  labs(
+    x = "AUC Beta (Intermediate)",
+    y = "AUC Beta (Liberal)",
+    color = "n beta",
+    title = "Scatter plot of auc_beta vs. auc_beta_intm"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+ggplot(AUC, aes(x = auc_beta_strg, y = auc_beta, color = log10(n_beta + 1))) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  scale_color_viridis_c(
+    option = "plasma",
+    breaks = log10(c(1, 10, 100) + 1),
+    labels = c("1", "10", "100")
+  ) +
+  labs(
+    x = "AUC Beta (Stringent)",
+    y = "AUC Beta (Liberal)",
+    color = "n beta",
+    title = "Scatter plot of auc_beta vs. auc_beta_intm"
+  ) +
+  theme_minimal(base_size = 14)
+
+ggplot(AUC, aes(x = auc_both_intm, y = auc_both, color = log10(n_alpha + n_beta + 1))) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  scale_color_viridis_c(
+    option = "plasma",
+    breaks = log10(c(1, 10, 100) + 1),
+    labels = c("1", "10", "100")
+  ) +
+  labs(
+    x = "AUC Both (Intermediate)",
+    y = "AUC Both (Liberal)",
+    color = "n both",
+    title = "Scatter plot of auc_beta vs. auc_beta_intm"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+ggplot(AUC, aes(x = auc_both_strg, y = auc_both, color = log10(n_alpha + n_beta + 1))) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  scale_color_viridis_c(
+    option = "plasma",
+    breaks = log10(c(1, 10, 100) + 1),
+    labels = c("1", "10", "100")
+  ) +
+  labs(
+    x = "AUC Both (Stringent)",
+    y = "AUC Both (Liberal)",
+    color = "n both",
+    title = "Scatter plot of auc_beta vs. auc_beta_intm"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+ggplot(AUC, aes(x = log10(n_beta + 1), y = auc_beta)) +
+  geom_point(size = 2, alpha = 0.5) +
+  geom_vline(xintercept = log10(11), color = "red") + 
+  scale_x_continuous(
+    breaks = log10(c(0, 1, 2, 5, 10, 20, 50, 100) + 1),
+    labels = c("0", "1", "2", "5", "10", "20", "50", "100")
+  ) + 
+  theme_minimal(base_size = 14)
+
+ggplot(AUC, aes(x = log10(n_beta + 1), y = auc_both)) +
+  geom_point(size = 2, alpha = 0.5) + 
+  geom_vline(xintercept = log10(11), color = "red") + 
+  scale_x_continuous(
+    breaks = log10(c(0, 1, 2, 5, 10, 20, 50, 100) + 1),
+    labels = c("0", "1", "2", "5", "10", "20", "50", "100")
+  ) + 
+  theme_minimal(base_size = 14)
+
+```
+
+## Examine the distance across these TCRs
+
+```{r fig.width = 4, fig.height = 3}
+source("../tcr_cluster_function/_tcr_dist.R")
+
+compute_tcrdist_matrix <- function(chains, 
+                                   dist_fun = TcrDistCalculator, 
+                                   use_unique_names = TRUE) {
+  if (!is.character(chains)) stop("`chains` must be a character vector.")
+  n <- length(chains)
+  M <- matrix(0, nrow = n, ncol = n)
+
+  # set dimnames (avoid duplicates if desired)
+  rn <- if (use_unique_names) make.unique(chains) else chains
+  dimnames(M) <- list(rn, rn)
+
+  if (n <= 1) return(M)
+
+  for (i in seq_len(n - 1)) {
+    for (j in (i + 1):n) {
+      d <- dist_fun(chains[i], chains[j])
+      M[i, j] <- d
+      M[j, i] <- d
+    }
+  }
+  M
+}
+
+
+TCRA_all = TCRB_all = NULL
+
+dist_A_within = dist_B_within = list()
+
+for(mut1 in mut2check){
+  pred1 = TCR_pred[[mut1]]
+  TCRA_all = c(TCRA_all, pred1$TCRA)
+  TCRB_all = c(TCRB_all, pred1$TCRB)
+  
+  D_alpha <- compute_tcrdist_matrix(pred1$TCRA)
+  D_beta  <- compute_tcrdist_matrix(pred1$TCRB)
+
+  dist_A_within[[mut1]] = c(D_alpha[upper.tri(D_alpha)])
+  dist_B_within[[mut1]] = c(D_beta[upper.tri(D_beta)])
+}
+
+length(TCRA_all)
+length(TCRB_all)
+
+set.seed(101)
+TCRA_all = sample(TCRA_all, 2000)
+TCRB_all = sample(TCRB_all, 2000)
+length(TCRA_all)
+length(TCRB_all)
+
+fA = paste0(result_dir, "/step8_tcr_A_dist.tsv")
+fB = paste0(result_dir, "/step8_tcr_B_dist.tsv")
+
+dist_A_all = compute_tcrdist_matrix(TCRA_all)
+dist_B_all = compute_tcrdist_matrix(TCRB_all)
+
+dist_A_all = dist_A_all[upper.tri(dist_A_all)]
+dist_B_all = dist_B_all[upper.tri(dist_B_all)]
+
+dist_A_within_10 = sapply(dist_A_within, quantile, probs = 0.10)
+dist_B_within_10 = sapply(dist_B_within, quantile, probs = 0.10)
+
+dist_A_within_q1 = sapply(dist_A_within, quantile, probs = 0.25)
+dist_B_within_q1 = sapply(dist_B_within, quantile, probs = 0.25)
+
+dist_A_within_med = sapply(dist_A_within, median)
+dist_B_within_med = sapply(dist_B_within, median)
+
+names(dist_A_within_10) = gsub(".10%", "", names(dist_A_within_10), fixed = TRUE)
+names(dist_B_within_10) = gsub(".10%", "", names(dist_B_within_10), fixed = TRUE)
+
+names(dist_A_within_q1) = gsub(".25%", "", names(dist_A_within_q1), fixed = TRUE)
+names(dist_B_within_q1) = gsub(".25%", "", names(dist_B_within_q1), fixed = TRUE)
+
+stopifnot(all(names(dist_A_within_q1) == names(dist_A_within_med)))
+stopifnot(all(names(dist_A_within_q1) == names(dist_A_within_10)))
+
+stopifnot(all(names(dist_B_within_q1) == names(dist_B_within_med)))
+stopifnot(all(names(dist_B_within_q1) == names(dist_B_within_10)))
+
+dist_A_df = data.table(mut=names(dist_A_within_q1), 
+                       dec = dist_A_within_10, 
+                       q1  = dist_A_within_q1, 
+                       med = dist_A_within_med)
+dist_A_df = dist_A_df[order(q1),]
+
+
+dist_B_df = data.table(mut=names(dist_B_within_q1), 
+                       dec = dist_B_within_10, 
+                       q1  = dist_B_within_q1, 
+                       med = dist_B_within_med)
+
+dist_B_df = dist_B_df[order(q1),]
+
+fwrite(dist_A_df, paste0(result_dir, "/step8_tcr_A_dist.tsv"), sep="\t")
+fwrite(dist_B_df, paste0(result_dir, "/step8_tcr_B_dist.tsv"), sep="\t")
+
+dist_A_df[1:5,]
+dist_A_df[order(dec),][1:5,]
+
+apply(dist_A_df[,2:4], 2, summary)
+quantile(dist_A_all, probs = c(0.1, 0.25, 0.5))
+
+dist_B_df[1:10,]
+dist_B_df[order(dec),][1:10,]
+
+apply(dist_B_df[,2:4], 2, summary)
+quantile(dist_B_all, probs = c(0.1, 0.25, 0.5))
+
+TCR_pred[["OR11H12:G79E"]]
+TCR_pred[["TMC5:E690K"]]
+TCR_pred[["EGFR:L858R"]]
+TCR_pred[["ERBB2:S310F"]]
+
+```
+
+## Plot the distribution of TCR distance
+
+```{r fig.width = 4.5, fig.height = 3}
+
+dist_A_within = unlist(dist_A_within)
+dist_B_within = unlist(dist_B_within)
+
+df1 <- data.frame(
+  value = c(dist_A_all, dist_A_within),
+  group = c(rep("All", length(dist_A_all)),
+            rep("Within", length(dist_A_within)))
+)
+
+ggplot(df1, aes(x = value, color = group, fill = group)) +
+  geom_density(alpha = 0.3) +
+  theme_minimal() +
+  labs(
+    x = "Distance",
+    y = "Density",
+    title = "TCR alpha chain"
+  )
+
+df2 <- data.frame(
+  value = c(dist_B_all, dist_B_within),
+  group = c(rep("All", length(dist_B_all)),
+            rep("Within", length(dist_B_within)))
+)
+
+ggplot(df2, aes(x = value, color = group, fill = group)) +
+  geom_density(alpha = 0.3) +
+  theme_minimal() +
+  labs(
+    x = "Distance",
+    y = "Density",
+    title = "TCR beta chain"
+  )
+```
+
+
+## Match samples between TCR data and HLA data
+
+```{r}
+dim(hla_I_matrix)
+dim(hla_II_matrix)
+
+table(colnames(hla_I_matrix)[-1] == colnames(hla_II_matrix)[-1])
+
+table(colnames(TCR_mat) %in% colnames(hla_I_matrix))
+subject2use = intersect(colnames(TCR_mat), colnames(hla_I_matrix))
+length(subject2use)
+
+TCR_mat = TCR_mat[,match(subject2use, colnames(TCR_mat))]
+
+sumTCR = colSums(TCR_mat)
+table(sumTCR)
+
+sort(sumTCR, decreasing = TRUE)[1:10]
+
+stopifnot(all(subject2use %in% colnames(hla_II_matrix)))
+HLA_I_alleles  = hla_I_matrix$HLA_ClassI
+HLA_II_alleles = hla_II_matrix$HLA_ClassII
+
+hla_I_matrix = hla_I_matrix[,match(subject2use, colnames(hla_I_matrix))]
+hla_I_matrix = data.frame(hla_I_matrix)
+rownames(hla_I_matrix) = HLA_I_alleles
+dim(hla_I_matrix)
+hla_I_matrix[1:2,1:3]
+
+hla_II_matrix = hla_II_matrix[,match(subject2use, colnames(hla_II_matrix))]
+hla_II_matrix = data.frame(hla_II_matrix)
+rownames(hla_II_matrix) = HLA_II_alleles
+dim(hla_II_matrix)
+hla_II_matrix[1:2,1:3]
+
+TCR_mat = data.frame(TCR_mat)
+dim(TCR_mat)
+TCR_mat[1:2,1:3]
+
+```
+
+## Subset HLA data to HLAs that appear in at least 100 individuals
+```{r}
+sum_HLA = rowSums(hla_I_matrix)
+summary(sum_HLA)
+
+hla_I_matrix = hla_I_matrix[sum_HLA > 100,]
+dim(hla_I_matrix)
+
+sum_HLA = rowSums(hla_II_matrix)
+summary(sum_HLA)
+
+hla_II_matrix = hla_II_matrix[sum_HLA > 100,]
+dim(hla_II_matrix)
+```
+
+## Check number of TCRs for BRAF V600E
+
+```{r fig.width = 5, fig.heigh = 5}
+
+pred1 = TCR_pred[["BRAF:V600E"]]
+pred1
+
+stopifnot(all(pred1$TCRB %in% rownames(TCR_mat)))
+
+TCR_mat_sub = TCR_mat[match(pred1$TCRB, rownames(TCR_mat)),]
+dim(TCR_mat_sub)
+
+n_sample = rowSums(TCR_mat_sub)
+summary(n_sample)
+
+sumTCR = colSums(TCR_mat_sub)
+table(sumTCR)
+```
+
+## Check number of TCRs for SF3B1 K700E
+
+```{r fig.width = 5, fig.heigh = 5}
+
+pred1 = TCR_pred[["SF3B1:K700E"]]
+pred1
+
+stopifnot(all(pred1$TCRB %in% rownames(TCR_mat)))
+
+TCR_mat_sub = TCR_mat[match(pred1$TCRB, rownames(TCR_mat)),]
+dim(TCR_mat_sub)
+
+n_sample = rowSums(TCR_mat_sub)
+summary(n_sample)
+
+sumTCR = colSums(TCR_mat_sub)
+table(sumTCR)
+```
+
+## Check for HLA I alleles and TCR overlap
+
+```{r}
+
+get_pvals <- function(X, y){
+  apply(X, 1, function(row) {
+    # make 2x2 contingency table
+    tab <- table(row, y)
+    # run Fisher's exact test
+    if (all(dim(tab) == c(2,2))) {
+      f1 = fisher.test(tab, alternative = "greater")
+      res = c(pval = f1$p.value, odds_ratio = f1$estimate)
+    } else {
+      res = c(pval = NA, odds_ratio = NA)
+    }
+    res
+  })
+}
+
+pval_HLA_I = pval_HLA_II = list()
+or_HLA_I = or_HLA_II = list()
+
+for(mut1 in mut2check){
+  pred1 = TCR_pred[[mut1]]
+
+  stopifnot(all(pred1$TCRB %in% rownames(TCR_mat)))
+  
+  TCR_mat_sub = TCR_mat[match(pred1$TCRB, rownames(TCR_mat)),]
+  sumTCR = colSums(TCR_mat_sub)
+  anyTCR = as.numeric(sumTCR > 0)
+  res_I  = get_pvals(hla_I_matrix, anyTCR)
+  res_II = get_pvals(hla_II_matrix, anyTCR)
+  
+  pval_HLA_I[[mut1]]  = res_I[1,]
+  pval_HLA_II[[mut1]] = res_II[1,]
+  
+  or_HLA_I[[mut1]]  = res_I[2,]
+  or_HLA_II[[mut1]] = res_II[2,]
+}
+
+stopifnot(all(sapply(pval_HLA_I, length) == nrow(hla_I_matrix)))
+stopifnot(all(sapply(pval_HLA_II, length) == nrow(hla_II_matrix)))
+
+
+p_hla_I <- do.call(cbind, pval_HLA_I)
+dim(p_hla_I)
+p_hla_I[1:2, 1:5]
+
+p_hla_II <- do.call(cbind, pval_HLA_II)
+dim(p_hla_II)
+p_hla_II[1:2, 1:5]
+
+or_hla_I <- do.call(cbind, or_HLA_I)
+dim(or_hla_I)
+or_hla_I[1:2, 1:5]
+
+or_hla_II <- do.call(cbind, or_HLA_II)
+dim(or_hla_II)
+or_hla_II[1:2, 1:5]
+
+enriched_I = apply(p_hla_I, 2, function(v){sum(v < 0.05/nrow(p_hla_I))})
+enriched_II = apply(p_hla_II, 2, function(v){sum(v < 0.05/nrow(p_hla_II))})
+
+table(enriched_I > 0)
+table(enriched_II > 0)
+
+
+write.table(p_hla_I, paste0(result_dir, "/step8_TCR_HLA_I_overlap_pval.tsv"), 
+            sep = "\t", row.names = TRUE)
+
+write.table(p_hla_II, paste0(result_dir, "/step8_TCR_HLA_II_overlap_pval.tsv"), 
+            sep = "\t", row.names = TRUE)
+
+write.table(or_hla_I, paste0(result_dir, "/step8_TCR_HLA_I_overlap_or.tsv"), 
+            sep = "\t", row.names = TRUE)
+
+write.table(or_hla_II, paste0(result_dir, "/step8_TCR_HLA_II_overlap_or.tsv"), 
+            sep = "\t", row.names = TRUE)
+
+```
+
+## Draw a heatmap for HLA_I overlap
+
+```{r fig.height = 10, fig.width = 5}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+thr = 0.05/nrow(p_hla_I)
+row_keep <- rowSums(p_hla_I < thr & or_hla_I > 1, na.rm = TRUE) >= 1
+col_keep <- colSums(p_hla_I < thr & or_hla_I > 1, na.rm = TRUE) >= 1
+
+p_sub <- p_hla_I[row_keep, col_keep, drop = FALSE]
+or_sub <- or_hla_I[row_keep, col_keep, drop = FALSE]
+
+if (nrow(p_sub) == 0 || ncol(p_sub) == 0) {
+  stop("No rows/columns pass the threshold; nothing to plot.")
+}
+
+bin <- p_sub < thr
+
+# Row (HLA) order
+if (nrow(bin) > 1) {
+  row_ord <- hclust(dist(bin, method = "binary"))$order
+} else row_ord <- seq_len(nrow(bin))
+
+# Column (Mutation) order
+if (ncol(bin) > 1) {
+  col_ord <- hclust(dist(t(bin), method = "binary"))$order
+} else col_ord <- seq_len(ncol(bin))
+
+# Reorder matrix
+p_ord <- p_sub[row_ord, col_ord, drop = FALSE]
+or_ord <- or_sub[row_ord, col_ord, drop = FALSE]
+
+
+# Long format for p-values
+df_p <- as.data.frame(t(p_ord)) |>
+  mutate(Mutation = colnames(p_ord)) |>
+  pivot_longer(-Mutation, names_to = "HLA", values_to = "p")
+
+# Long format for OR
+df_or <- as.data.frame(t(or_ord)) |>
+  mutate(Mutation = colnames(or_ord)) |>
+  pivot_longer(-Mutation, names_to = "HLA", values_to = "or")
+
+# Merge p + OR
+df_long <- left_join(df_p, df_or, by = c("Mutation","HLA")) |>
+  mutate(
+    # truncate p at 1e-15 and apply threshold
+    logp = ifelse(p < thr, -log10(pmax(p, 1e-15)), NA_real_),
+    Mutation = factor(Mutation, levels = colnames(p_ord)),
+    HLA      = factor(HLA,      levels = rownames(p_ord))
+  )
+
+# Plot with color for -log10(p), size for odds ratio
+ggplot(df_long, aes(x = HLA, y = Mutation)) +
+  geom_point(
+    data = subset(df_long, !is.na(logp)),
+    aes(size = or, fill = logp),
+    shape = 21, color = "grey30"
+  ) +
+  # guiding lines
+  geom_vline(xintercept = seq(0.5, length(unique(df_long$HLA)) + 0.5, 1),
+             color = "grey85", linewidth = 0.3) +
+  geom_hline(yintercept = seq(0.5, length(unique(df_long$Mutation)) + 0.5, 1),
+             color = "grey85", linewidth = 0.3) +
+  scale_size(range = c(1, 3), name = "Odds ratio") +
+  scale_fill_gradientn(
+    colours = c("lightblue", "orange", "red"),
+    na.value = "white",
+    limits = c(-log10(thr), 15),
+    oob = scales::squish,
+    name = expression(-log[10](p))
+  ) +
+  coord_fixed() +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.grid = element_blank()
+  ) +
+  labs(x = NULL, y = NULL)
+```
+
+
+## Draw a heatmap for HLA_II overlap
+
+```{r fig.height = 7, fig.width = 4.5}
+thr = 0.05/nrow(p_hla_II)
+row_keep <- rowSums(p_hla_II < thr, na.rm = TRUE) >= 1
+col_keep <- colSums(p_hla_II < thr, na.rm = TRUE) >= 1
+
+p_sub <- p_hla_II[row_keep, col_keep, drop = FALSE]
+or_sub <- or_hla_II[row_keep, col_keep, drop = FALSE]
+
+if (nrow(p_sub) == 0 || ncol(p_sub) == 0) {
+  stop("No rows/columns pass the threshold; nothing to plot.")
+}
+
+bin <- p_sub < thr
+
+# Row (HLA) order
+if (nrow(bin) > 1) {
+  row_ord <- hclust(dist(bin, method = "binary"))$order
+} else row_ord <- seq_len(nrow(bin))
+
+# Column (Mutation) order
+if (ncol(bin) > 1) {
+  col_ord <- hclust(dist(t(bin), method = "binary"))$order
+} else col_ord <- seq_len(ncol(bin))
+
+# Reorder matrix
+p_ord <- p_sub[row_ord, col_ord, drop = FALSE]
+or_ord <- or_sub[row_ord, col_ord, drop = FALSE]
+
+# Long format for p-values
+df_p <- as.data.frame(t(p_ord)) |>
+  mutate(Mutation = colnames(p_ord)) |>
+  pivot_longer(-Mutation, names_to = "HLA", values_to = "p")
+
+# Long format for OR
+df_or <- as.data.frame(t(or_ord)) |>
+  mutate(Mutation = colnames(or_ord)) |>
+  pivot_longer(-Mutation, names_to = "HLA", values_to = "or")
+
+# Merge p + OR
+df_long <- left_join(df_p, df_or, by = c("Mutation","HLA")) |>
+  mutate(
+    # truncate p at 1e-15 and apply threshold
+    logp = ifelse(p < thr, -log10(pmax(p, 1e-15)), NA_real_),
+    Mutation = factor(Mutation, levels = colnames(p_ord)),
+    HLA      = factor(HLA,      levels = rownames(p_ord))
+  )
+
+# Plot with color for -log10(p), size for odds ratio
+ggplot(df_long, aes(x = HLA, y = Mutation)) +
+  geom_point(
+    data = subset(df_long, !is.na(logp)),
+    aes(size = or, fill = logp),
+    shape = 21, color = "grey30"
+  ) +
+  # guiding lines
+  geom_vline(xintercept = seq(0.5, length(unique(df_long$HLA)) + 0.5, 1),
+             color = "grey85", linewidth = 0.3) +
+  geom_hline(yintercept = seq(0.5, length(unique(df_long$Mutation)) + 0.5, 1),
+             color = "grey85", linewidth = 0.3) +
+  scale_size(range = c(1, 3), name = "Odds ratio") +
+  scale_fill_gradientn(
+    colours = c("lightblue", "orange", "red"),
+    na.value = "white",
+    limits = c(-log10(thr), 15),
+    oob = scales::squish,
+    name = expression(-log[10](p))
+  ) +
+  coord_fixed() +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.grid = element_blank()
+  ) +
+  labs(x = NULL, y = NULL)
+
+```
+
+
+## Check a few examples for HLA-I
+
+```{r fig.height = 7, fig.width = 4.5}
+mut1 = "TP53:R273L"
+sort(p_hla_I[,mut1])[1:5]
+sort(or_hla_I[,mut1], decreasing = TRUE)[1:5]
+
+hla_names = names(sort(p_hla_I[,mut1])[1:2])
+hla_names
+
+pred1 = TCR_pred[[mut1]]
+
+TCR_mat_sub = TCR_mat[match(pred1$TCRB, rownames(TCR_mat)),]
+sumTCR = colSums(TCR_mat_sub)
+anyTCR = as.numeric(sumTCR > 0)
+
+stopifnot(all(names(TCR_mat_sub) == names(hla_II_matrix)))
+
+for(hla_name in hla_names){
+  HLA_v = unlist(hla_I_matrix[hla_name,])
+  table(anyTCR, HLA_v)
+  f1 = fisher.test(table(anyTCR, HLA_v), alternative = "greater")
+  
+  print(hla_name)
+  print(f1$p.value)
+  print(f1$estimate)
+  cq1 = chisq.test(table(anyTCR, HLA_v))
+  print(cq1$expected)
+  print(cq1$observed)
+
+  cat("\n")
+
+}
+
+hla_names
+
+cq12 = chisq.test(unlist(hla_I_matrix[hla_names[1],]), 
+                  unlist(hla_I_matrix[hla_names[2],]))
+cq12
+cq12$observed
+cq12$expected
+
+cq13 = chisq.test(unlist(hla_I_matrix[hla_names[1],]), 
+                  unlist(hla_II_matrix["DRB1*03:01",]))
+cq13
+cq13$observed
+cq13$expected
+
+```
+
+## Check a few examples for HLA-II
+
+```{r fig.height = 7, fig.width = 4.5}
+mut1 = "TP53:R273L"
+sort(p_hla_II[,mut1])[1:5]
+sort(or_hla_II[,mut1], decreasing = TRUE)[1:5]
+
+hla_names = names(sort(p_hla_II[,mut1])[1:3])
+hla_names
+
+pred1 = TCR_pred[[mut1]]
+
+TCR_mat_sub = TCR_mat[match(pred1$TCRB, rownames(TCR_mat)),]
+sumTCR = colSums(TCR_mat_sub)
+anyTCR = as.numeric(sumTCR > 0)
+
+stopifnot(all(names(TCR_mat_sub) == names(hla_II_matrix)))
+
+for(hla_name in hla_names){
+  HLA_v = unlist(hla_II_matrix[hla_name,])
+  table(anyTCR, HLA_v)
+  f1 = fisher.test(table(anyTCR, HLA_v), alternative = "greater")
+  
+  print(hla_name)
+  print(f1$p.value)
+  print(f1$estimate)
+  cq1 = chisq.test(table(anyTCR, HLA_v))
+  print(cq1$expected)
+  print(cq1$observed)
+
+  cat("\n")
+
+}
+
+hla_names
+
+cq12 = chisq.test(unlist(hla_II_matrix[hla_names[1],]), 
+                  unlist(hla_II_matrix[hla_names[2],]))
+cq12
+cq12$observed
+cq12$expected
+
+cq13 = chisq.test(unlist(hla_II_matrix[hla_names[1],]), 
+                  unlist(hla_II_matrix[hla_names[3],]))
+cq13
+cq13$observed
+cq13$expected
+
+```
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```
+

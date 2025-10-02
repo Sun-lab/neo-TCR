@@ -38,7 +38,10 @@ CAT_dir  = "~/research/CAT/data"
 
 # Read in data
 
-## Read in cell information of Zheng et al. data
+## Read in cell information derived from CAT (Cancer Associated TCRs)
+
+The cell information were derived from GitHub [CAT](https://github.com/Sun-lab/CAT).
+
 ```{r message = FALSE, warning=FALSE}
 cd8 = fread(file.path(CAT_dir, "CD8_with_NN_predictions.tsv.gz"))
 cd4 = fread(file.path(CAT_dir, "CD4_with_NN_predictions.tsv.gz"))
@@ -54,7 +57,6 @@ table(cd8$label, cd8$`True Label`)
 
 table(cd8$label, cd8$Prediction > 0.5)
 table(cd4$label, cd4$Prediction > 0.5)
-
 ```
 
 
@@ -91,6 +93,10 @@ res_A = res_A[pval_LRT <= 0.1,]
 res_B = res_B[pval_LRT <= 0.1,]
 dim(res_A)
 dim(res_B)
+
+res_A[mut == "SF3B1:2:198266834:T:C", 1:7]
+res_B[mut == "SF3B1:2:198266834:T:C", 1:7]
+
 ```
 
 # Check the postive and negative cancer reactive TCR scores
@@ -121,8 +127,6 @@ table(cd8$label, cd8$clone_n_patient)
 ### The number of clones vs. cancer reactive status
 
 ```{r fig.width=6, fig.height=4}
-
-# Build working DT
 dt <- data.table(
   label = cd8$label,
   prediction = cd8$Prediction,
@@ -232,7 +236,7 @@ cd8[(! TRA_cdr3 %in% res_A$TCR) & TRB_cdr3 %in% res_B$TCR,
     TCR_asso_mutation:="beta"]
 
 tt1 = table(cd8$TCR_asso_mutation, cd8$label == 1 & cd8$Prediction > 0.5)
-
+tt1
 ```
 
 ### Plot CR proportions
@@ -252,33 +256,17 @@ df_prop
 
 ggplot(df_prop[df_prop$CR == TRUE,], aes(x = TCR, y = prop_TRUE, fill = TCR)) +
   geom_col() +
+  geom_text(aes(label = round(total/1000)),
+            vjust = -0.3, size = 4) + 
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   labs(x = "Matching of TCR chains",
        y = "Proportion of CR") +
   theme_minimal(base_size = 14) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
         legend.position = "none")
-
-# Row-wise summation (log10 scale)
-df_sum <- df1 %>%
-  group_by(TCR) %>%
-  summarise(total = sum(Freq), .groups = "drop")
-
-df_sum$TCR <- factor(df_sum$TCR,
-                     levels = c("neither", "alpha", "beta", "both"))
-
-ggplot(df_sum, aes(x = TCR, y = total, fill = TCR)) +
-  geom_col() +
-  geom_text(aes(label = scales::comma(total)),
-            vjust = -0.3, size = 4) +
-  scale_y_log10(expand = expansion(mult = c(0, 0.1))) +
-  labs(x = "Matching of TCR chains",
-       y = "Total Count (log10)") +
-  theme_minimal(base_size = 14) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none")
-
 ```
+
+### Plot positive and negative scores
 
 ```{r fig.width=3, fig.height=3}
 dt <- as.data.table(cd8)
@@ -324,7 +312,7 @@ ggplot(dt, aes(x = TCR_asso_mutation_cat, y = neg_score_CD8, fill = TCR_asso_mut
 
 ```
 
-## check relation with total number of clones
+### check relation with total number of clones
 
 ```{r fig.width=4.5, fig.height=3}
 dt <- as.data.table(cd8)
@@ -378,8 +366,198 @@ ggplot(freq, aes(x = TCR_cat, y = prop, fill = cn_tot_cat)) +
 
 ```
 
-## CD4+ T cells
+### Further check those T cells belong to the "both" group
 
+```{r}
+table(cd8$TCR_asso_mutation)
+both = cd8[TCR_asso_mutation == "both",]
+
+tb1 = table(both$study)
+tb0 = table(cd8$study)
+
+tb1
+tb0
+
+round(tb1/tb0*100, 2)
+
+table(both$Tissue)
+table(both$study, both$Tissue)
+
+table(both$Tissue, both$label)
+table(both$study, both$label)
+
+summary(both$Prediction)
+
+tclone = table(both$clone)
+sort(tclone, decreasing = TRUE)[1:10]
+
+tclone2 = table(both$clone[both$label == 1])
+tclone2
+
+freq1 <- sort(tclone, decreasing = TRUE)
+freq2 <- tclone2
+
+df1 <- data.frame(clone_id = names(freq1), freq_all = as.numeric(freq1))
+df2 <- data.frame(clone_id = names(freq2), freq_CR = as.numeric(freq2))
+merged_df <- merge(df1, df2, by = "clone_id", all.x = TRUE)
+merged_df$freq_CR[is.na(merged_df$freq_CR)] <- 0
+merged_df = merged_df[order(merged_df$freq_all, decreasing = TRUE),]
+head(merged_df, 15)
+
+merged_df[order(merged_df$freq_CR, decreasing = TRUE),][1:10,]
+```
+
+```{r}
+
+df <- data.frame(
+  tcr = c(
+    "TRAV1-2_CAVRDKAAGNKLTF_TRBV28_CASSLGGNEQFF",
+    "TRAV8-4_CAVETGANNLFF_TRBV13_CASSLTGNEQFF",
+    "TRAV29/DV5_CAASNNARLMF_TRBV12-4_CASSLNTDTQYF",
+    "TRAV12-1_CVVNTDKLIF_TRBV7-2_CASSFGGYEQYF"
+  ),
+  freq1_all = c(353, 172, 100, 14),
+  freq_CR    = c(267, 172, 98,  13),
+  stringsAsFactors = FALSE
+)
+
+# Load required package
+library(tidyr)
+
+# Separate the TCR string into four new columns
+df_split <- separate(
+  df,
+  col  = "tcr",
+  into = c("alpha_v_gene", "alpha_cdr3", "beta_v_gene", "beta_cdr3"),
+  sep  = "_"
+)
+
+print(df_split)
+
+resA_summary <- res_A %>%
+  group_by(TCR) %>%
+  summarise(
+    alpha_n_mutations = n(),
+    alpha_TCR_freq  = unique(TCR_freq, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+resB_summary <- res_B %>%
+  group_by(TCR) %>%
+  summarise(
+    beta_n_mutations = n(),
+    beta_TCR_freq   = unique(TCR_freq, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_annotated <- df_split %>%
+  left_join(resA_summary, by = c("alpha_cdr3" = "TCR")) %>%
+  left_join(resB_summary, by = c("beta_cdr3"  = "TCR")) %>%
+  mutate(across(
+    c(alpha_n_mutations, alpha_TCR_freq, beta_n_mutations, beta_TCR_freq),
+    ~ tidyr::replace_na(., 0)
+  ))
+
+df_annotated
+```
+### What are the somatic mutations associated with these TCRs
+
+```TRAV1-2_CAVRDKAAGNKLTF_TRBV28_CASSLGGNEQFF```
+
+```{r}
+options(width = 180)
+
+case1 = both[clone == "TRAV1-2_CAVRDKAAGNKLTF_TRBV28_CASSLGGNEQFF"]
+dim(case1)
+
+table(case1$study, case1$label)
+table(case1$Patient, case1$label)
+
+mut_A = res_A[TCR == "CAVRDKAAGNKLTF", c(1:7,10)][order(pval_LRT),]
+mut_B = res_B[TCR == "CASSLGGNEQFF", c(1:7,10)][order(pval_LRT),]
+dim(mut_A)
+dim(mut_B)
+mut_A[1,1:7]
+mut_B[1,1:7]
+
+mut_A[1:min(nrow(mut_A), 20),-1]
+mut_B[1:min(nrow(mut_B), 20),-1]
+
+intersect(mut_A$mut, mut_B$mut)
+```
+
+
+```TRAV8-4_CAVETGANNLFF_TRBV13_CASSLTGNEQFF```
+
+```{r}
+case2 = both[clone == "TRAV8-4_CAVETGANNLFF_TRBV13_CASSLTGNEQFF"]
+dim(case2)
+
+table(case2$study, case2$label)
+table(case2$Patient, case2$label)
+
+mut_A = res_A[TCR == "CAVETGANNLFF", c(1:7,10)][order(pval_LRT),]
+mut_B = res_B[TCR == "CASSLTGNEQFF", c(1:7,10)][order(pval_LRT),]
+dim(mut_A)
+dim(mut_B)
+mut_A[1,1:7]
+mut_B[1,1:7]
+
+mut_A[1:min(nrow(mut_A), 20),-1]
+mut_B[1:min(nrow(mut_B), 20),-1]
+
+intersect(mut_A$mut, mut_B$mut)
+
+```
+
+
+```TRAV29/DV5_CAASNNARLMF_TRBV12-4_CASSLNTDTQYF```
+
+```{r}
+case3 = both[clone == "TRAV29/DV5_CAASNNARLMF_TRBV12-4_CASSLNTDTQYF"]
+dim(case3)
+
+table(case3$study, case3$label)
+table(case3$Patient, case3$label)
+
+mut_A = res_A[TCR == "CAASNNARLMF", c(1:7,10)][order(pval_LRT),]
+mut_B = res_B[TCR == "CASSLNTDTQYF", c(1:7,10)][order(pval_LRT),]
+
+dim(mut_A)
+dim(mut_B)
+mut_A[1,1:7]
+mut_B[1,1:7]
+
+mut_A[1:min(nrow(mut_A), 20),-1]
+mut_B[1:min(nrow(mut_B), 20),-1]
+
+intersect(mut_A$mut, mut_B$mut)
+```
+
+```TRAV12-1_CVVNTDKLIF_TRBV7-2_CASSFGGYEQYF```
+
+```{r}
+case4 = both[clone == "TRAV12-1_CVVNTDKLIF_TRBV7-2_CASSFGGYEQYF"]
+dim(case4)
+
+table(case4$study, case4$label)
+table(case4$Patient, case4$label)
+
+mut_A = res_A[TCR == "CVVNTDKLIF", c(1:7,10)][order(pval_LRT),]
+mut_B = res_B[TCR == "CASSFGGYEQYF", c(1:7,10)][order(pval_LRT),]
+
+dim(mut_A)
+dim(mut_B)
+mut_A[1,1:7]
+mut_B[1,1:7]
+
+mut_A[1:min(nrow(mut_A), 20),-1]
+mut_B[1:min(nrow(mut_B), 20),-1]
+
+intersect(mut_A$mut, mut_B$mut)
+```
+
+## CD4+ T cells
 
 ```{r}
 table(cd4$TRA_cdr3 %in% res_A$TCR, cd4$TRB_cdr3 %in% res_B$TCR)

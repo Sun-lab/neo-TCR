@@ -140,7 +140,7 @@ mut_dat[1:2,]
 
 ## Select mutations with similar population frequency as the TCR assocaited mutations 
 
-```{r fig.width=4, fig.height=3}
+```{r fig.width=3.5, fig.height=3}
 unique_muts = unique(mut_dat[,.(key, Variant_Classification, participant)])
 dim(unique_muts)
 unique_muts[1:5,]
@@ -178,8 +178,16 @@ tapply(mut_info$n, mut_info$group, table)
 mut_info$n_group = cut(mut_info$n, breaks = c(4.5, 5.5, 6.5, 10.5, 20.5, 50.5, Inf),
                       labels = c("5", "6", "7-10", "11-20", "21-50", ">50"))
 
+mut_info$group <- factor(mut_info$group, levels = c("No", "Weak", "Strong"))
+tapply(mut_info$n_group, mut_info$group, function(x){table(x)/length(x)})
+
 ggplot(mut_info, aes(x = group, fill = n_group)) +
-    geom_bar(position = "fill") + scale_fill_brewer(palette = "Dark2")
+  geom_bar(position = "fill") + scale_fill_brewer(palette = "Dark2") + 
+  labs(
+    y = "Proportion",
+    fill = "mutation\nfrequency"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 
@@ -211,9 +219,9 @@ fwrite(mut_dat, file.path(result_dir, "step7_mutations.tsv"), sep="\t")
 
 After checking all the URLs from 2019, https://grch37.ensembl.org is the only one that give the BRAF V600E correct annoation. 
 
-Not runing this code here since it oftens has error of operation timed out.
+Not running this code here since it oftens has error of operation timed out.
 
-```{r}
+```{r eval=FALSE}
 mut_dat[Hugo_Symbol == "TP53",][1:2,]
 mut_dat[Hugo_Symbol == "BRAF",][1:2,]
 
@@ -283,7 +291,7 @@ cbind(wt_aa, len_aa, wt_cdna, len_cdna, urls)
 
 Extract AA sequence for 1000 transcripts each time.
 
-```{r}
+```{r eval=FALSE}
 dim(mut_dat)
 mut_dat[1:2,]
 

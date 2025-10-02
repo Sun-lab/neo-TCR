@@ -62,6 +62,32 @@ res_alpha[1:2,]
 res_beta[1:2,]
 res_both[1:2,]
 
+mut_info = fread("~/research/data/TCR/TCGA/_processed_data/mutation_info.tsv", 
+                 sep = "\t")
+mut_info[,key_dna := paste(Hugo_Symbol, key, sep=":")]
+mut_info[,key_pro := paste(Hugo_Symbol, 
+                           gsub("p.", "", HGVSp_Short, fixed = TRUE), sep=":")]
+dim(mut_info)
+mut_info[1:2,]
+
+stopifnot(all(res_both$mut %in% mut_info$key_dna))
+stopifnot(all(res_alpha$mut %in% mut_info$key_dna))
+stopifnot(all(res_beta$mut %in% mut_info$key_dna))
+
+res_alpha = merge(res_alpha, mut_info[, .(key_dna, key_pro)], 
+                  by.x = "mut", by.y = "key_dna", all.x = TRUE)
+res_beta  = merge(res_beta, mut_info[, .(key_dna, key_pro)], 
+                  by.x = "mut", by.y = "key_dna", all.x = TRUE)
+res_both  = merge(res_both, mut_info[, .(key_dna, key_pro)], 
+                  by.x = "mut", by.y = "key_dna", all.x = TRUE)
+
+dim(res_alpha)
+dim(res_beta)
+dim(res_both)
+
+res_alpha[1:2,]
+res_beta[1:2,]
+res_both[1:2,]
 ```
 
 
@@ -78,16 +104,9 @@ res_alpha = res_alpha[auc > 0.6,]
 res_beta = res_beta[auc > 0.6,]
 res_both = res_both[auc > 0.6,]
 
-str1 = "LZTR1:22:21343966:GAGGAGGTGAGGGGCGTGGGGAGCCAGGGCGCAGGTA:-"
-str2 = "LZTR1:22:21343966:G*A:-"
-res_alpha$mut = gsub(str1, str2, res_alpha$mut, fixed = TRUE)
-res_beta$mut = gsub(str1, str2, res_beta$mut, fixed = TRUE)
-res_both$mut = gsub(str1, str2, res_both$mut, fixed = TRUE)
-
-
-t_alpha = sort(table(res_alpha$mut), decreasing = TRUE)
-t_beta  = sort(table(res_beta$mut),  decreasing = TRUE)
-t_both  = sort(table(res_both$mut),  decreasing = TRUE)
+t_alpha = sort(table(res_alpha$key_pro), decreasing = TRUE)
+t_beta  = sort(table(res_beta$key_pro),  decreasing = TRUE)
+t_both  = sort(table(res_both$key_pro),  decreasing = TRUE)
 
 table(t_alpha)
 length(t_alpha)
@@ -225,6 +244,7 @@ p_top + plot_spacer() + p_heat + p_right +
 ```
 
 ## Now set the p-value cutoff based on the concensus from individual mutations
+
 ```{r}
 setorder(res_alpha, cancer, mut, -auc, pcut)
 df_alpha = res_alpha[pcut == 0.1, .SD[1], by = .(cancer, mut)][order(-auc),]
@@ -256,7 +276,7 @@ flextable(df_both[1:20,])
 
 
 ```{r}
-df1 = df_both[1:10,c("cancer", "mut", "auc")]
+df1 = df_both[1:20,c("cancer", "key_pro", "auc")]
 names(df1) = c("Cancer", "Mutation", "AUC")
 flextable(df1)
 ```

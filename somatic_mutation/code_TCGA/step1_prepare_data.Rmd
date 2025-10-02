@@ -35,14 +35,14 @@ library(viridis)
 library(stringr)
 
 theme_set(theme_classic())
+data_dir = "~/research/data/TCR/TCGA"
+
 ```
 
 # Summarize TCR data
 
 ## Load TCR data
 ```{r}
-data_dir = "~/research/data/TCR/TCGA"
-
 mitcr = fread(file.path(data_dir, "mitcr_sampleStatistics_20160714.tsv"))
 tcga  = fread(file.path(data_dir, "TCGA_mitcr_cdr3_result_161008.tsv"))
 
@@ -479,7 +479,7 @@ mut_dat = fread(file.path(data_dir, mutation_file),
                            "Variant_Classification", 
                            "Variant_Type", "Gene", "Consequence", 
                            "Tumor_Sample_Barcode", "HGVSc", "HGVSp", 
-                           "t_depth", "t_ref_count", 
+                           "HGVSp_Short", "t_depth", "t_ref_count", 
                            "t_alt_count", "FILTER", "CENTERS", "NCALLERS"))
 dim(mut_dat)
 mut_dat[1:2,]
@@ -570,6 +570,27 @@ sample_info_mut$n_non_silent_mut[which(is_na)] = 0
 
 summary(sample_info_mut$n_mut)
 summary(sample_info_mut$n_non_silent_mut)
+
+mut_info = unique(mut_dat[,.(Hugo_Symbol, Variant_Classification, 
+                              HGVSc, HGVSp, HGVSp_Short, key)])
+mut_info = mut_info[order(Hugo_Symbol, key)]
+dim(mut_info)
+mut_info[1:2,]
+
+mut_freq <- mut_dat_uniq[, .N, by = .(key)]
+setnames(mut_freq, "N", "Freq")
+dim(mut_freq)
+mut_freq[1:2,]
+
+stopifnot(setequal(mut_freq$key, mut_info$key))
+mut_info = merge(mut_info, mut_freq)
+dim(mut_info)
+mut_info[1:2,]
+
+mut_info[Hugo_Symbol == "SF3B1",][order(-Freq)]
+
+fnm = file.path(data_dir, "_processed_data/mutation_info.tsv")
+fwrite(mut_info, fnm, sep = "\t")
 ```
 
 
