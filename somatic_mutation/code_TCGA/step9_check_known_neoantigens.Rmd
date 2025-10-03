@@ -82,6 +82,9 @@ known_neoantigen = fread("../data/konwn_public_neoantigen.csv")
 dim(known_neoantigen)
 known_neoantigen[1:2,]
 
+uniq_neo_mutations = unique(known_neoantigen$key)
+length(uniq_neo_mutations)
+
 known_neoantigen[,mutation := gsub(":p.", ":", key, fixed = TRUE)]
 
 table(mut_by_cv$key_pro %in% known_neoantigen$mutation)

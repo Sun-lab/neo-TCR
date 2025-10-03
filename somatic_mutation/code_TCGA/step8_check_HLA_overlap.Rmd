@@ -241,14 +241,15 @@ summary(nTCR_B)
 stopifnot(all(names(nTCR_A) == names(nTCR_B)))
 
 df = data.table(mutation = names(nTCR_A), nTCRA = nTCR_A, nTCRB = nTCR_B)
-df[,neoantigne:=mutation %in% known_neoantigen$mutation]
+df[,neoantigen:=mutation %in% known_neoantigen$mutation]
 dim(df)
 df[1:2,]
 
-table(df$neoantigne)
+table(df$neoantigen)
 
 stopifnot(all(df$mutation == mut_info$key_pro))
 df$Variant_Classification = mut_info$Variant_Classification
+df$Freq = mut_info$Freq
 
 library(ggplot2)
 library(ggExtra)
@@ -257,10 +258,10 @@ tick_labels <- c(0, 1, 5, 10, 50, 100)
 
 p <- ggplot(df, aes(x = log10(nTCRA + 1), y = log10(nTCRB + 1))) +
   # all points in grey
-  geom_point(data = subset(df, neoantigne == FALSE), 
+  geom_point(data = subset(df, neoantigen == FALSE), 
              color = "grey", alpha = 0.6) +
   # highlight neoantigen points in red on top
-  geom_point(data = subset(df, neoantigne == TRUE), 
+  geom_point(data = subset(df, neoantigen == TRUE), 
              color = "red", alpha = 0.8, size = 2) +
   theme_minimal() +
   labs(
@@ -283,12 +284,8 @@ ggMarginal(p, type = "histogram", bins = 30, fill = "lightgreen", color = "black
 table(df$nTCRA >= 30, df$nTCRB >= 10)
 df[nTCRA >=30 & nTCRB >= 10,]
 
-tapply(df$Variant_Classification, df$nTCRA >=30, table)
-tapply(df$Variant_Classification, df$nTCRB >=10, table)
-
 mut2check = as.character(unlist(df[nTCRA >= 30 & nTCRB >= 10, "mutation"]))
 
-tapply(df$Variant_Classification, df$nTCRA >=30 & df$nTCRB >=10, table)
 ```
 
 
@@ -346,7 +343,7 @@ ggplot(rel_freq, aes(x = Category, y = freq, fill = Group)) +
       "G4: TCRA≥30 & TCRB≥10"   = "#D55E00"  # vermilion
     )
   ) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  scale_y_continuous(limits = c(0, 0.65)) +
   theme_minimal(base_size = 12) +
   labs(
     x = NULL,   # remove x-axis title
@@ -357,6 +354,7 @@ ggplot(rel_freq, aes(x = Category, y = freq, fill = Group)) +
   )
 
 ```
+
 
 ```{r fig.width = 2, fig.height = 2.5}
 counts <- as.data.frame(table(df2$Group))
@@ -405,6 +403,93 @@ ggplot(quad_df2) +
     panel.grid = element_blank(),
     legend.position = "none"
   )
+
+```
+
+## Compare with mutation frequencies
+
+```{r fig.width = 4, fig.height = 3}
+tapply(df$Variant_Classification, df$nTCRA >=30, table)
+tapply(df2$Variant_Classification, df2$Freq >= 14, table)
+
+tapply(df$Variant_Classification, df$nTCRB >=10, table)
+tapply(df2$Variant_Classification, df2$Freq >= 11, table)
+
+tapply(df2$Freq, df2$Group, summary)
+
+tapply(df$Variant_Classification, df$nTCRA >=30 & df$nTCRB >=10, table)
+tapply(df2$Variant_Classification, df2$Freq >= 16, table)
+
+df2 <- df2 %>%
+  mutate(FreqGroup = case_when(
+    Freq <= 10 ~ "≤ 10",
+    Freq >= 11 & Freq <= 15 ~ "[11,15]",
+    Freq >= 16 ~ "≥ 16"
+  ))
+
+# Ensure proper factor ordering
+df2$FreqGroup <- factor(df2$FreqGroup, levels = c("≤ 10", "[11,15]", "≥ 16"))
+
+# Compute relative frequencies by Category within each FreqGroup
+rel_freq2 <- df2 %>%
+  count(FreqGroup, Category, name = "n") %>%
+  group_by(FreqGroup) %>%
+  mutate(freq = n / sum(n)) %>%
+  ungroup() %>%
+  complete(FreqGroup, Category, fill = list(n = 0, freq = 0))
+
+# Plot with 3 distinct colors
+ggplot(rel_freq2, aes(x = Category, y = freq, fill = FreqGroup)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      "≤ 10"   = "darkgrey", # green
+      "[11,15]" = "#1b9e77", # orange
+      "≥ 16"   = "#7570b3"  # purple
+    )
+  ) +
+  scale_y_continuous(limits = c(0, 0.65)) +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = NULL,
+    y = "Relative frequency",
+    fill = "Frequency group"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+## Check overlaps
+
+```{r}
+df3 = df2[df2$neoantigen == TRUE,]
+dim(df3)
+df3
+
+for(mut1 in df3$mutation){
+  tcrs = TCR_pred[[mut1]]
+  
+  cdr3A = setdiff(unique(known_neoantigen[mutation == mut1, CDR3A]), "")
+  cdr3B = setdiff(unique(known_neoantigen[mutation == mut1, CDR3B]), "")
+
+  if(length(cdr3A) > 0){
+    cdr3A = unlist(strsplit(cdr3A, ";"))
+    cat(mut1, "CDR3A\n")
+    print(intersect(tcrs$TCRA, cdr3A))
+  }
+  
+  if(length(cdr3B) > 0){
+    cdr3B = unlist(strsplit(cdr3B, ";"))
+    cat(mut1, "CDR3B\n")
+    print(intersect(tcrs$TCRA, cdr3A))
+  }
+
+}
+
+known_neoantigen[mutation == "KRAS:G12D",]
+known_neoantigen[mutation == "TP53:R175H",]
 
 ```
 
