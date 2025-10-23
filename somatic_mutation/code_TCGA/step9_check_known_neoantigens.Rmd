@@ -90,6 +90,9 @@ known_neoantigen[,mutation := gsub(":p.", ":", key, fixed = TRUE)]
 table(mut_by_cv$key_pro %in% known_neoantigen$mutation)
 table(mut_by_cv$key_pro %in% mut_by_TCR$mutation)
 
+intersect(mut_by_cv$key_pro, known_neoantigen$mutation)
+sort(intersect(mut_by_TCR$mutation, known_neoantigen$mutation))
+
 table(mut_by_TCR$mutation %in% known_neoantigen$mutation)
 table(mut_by_TCR$mutation %in% known_neoantigen$mutation, mut_by_TCR$nTCRA > 30)
 table(mut_by_TCR$mutation %in% known_neoantigen$mutation, mut_by_TCR$nTCRB > 10)

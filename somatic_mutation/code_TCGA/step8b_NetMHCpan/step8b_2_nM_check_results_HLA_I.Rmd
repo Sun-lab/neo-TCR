@@ -1,0 +1,337 @@
+---
+title: "Check the results of NetMHC"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(viridis)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(ggrepel)
+library(ggcorrplot)
+library(dplyr)
+library(readxl)
+
+theme_set(theme_classic())
+
+data_dir   = "~/research/data/TCR/TCGA/_processed_data"
+net_dir    = "~/research/data/TCR/TCGA/_results/netMHC"
+result_dir = "~/research/data/TCR/TCGA/_results"
+
+get_header <- function(fnm){
+  header = data.frame(fread(fnm, nrows = 2, header = TRUE, strip.white = FALSE))
+  w_HLA = grep("HLA", names(header))
+  
+  HLAs = rep("", ncol(header))
+  
+  for(w1 in w_HLA){
+    HLAs[w1:(w1+5)] = paste0(names(header)[w1], "_")
+  }
+  
+  header_names = paste0(HLAs, header[1,])
+  header_names = gsub("-", "_", header_names)
+}
+
+
+extract_14 = function(z){
+  xx = min(14 - nchar(z[1]), nchar(z[2]))
+  paste(z[1], substr(z[2], 1, xx), sep = "_")
+}
+
+get_identity <- function(x, appendix){
+  parts <- strsplit(paste(gsub("*", "_", x, fixed = TRUE), appendix, sep = "_"), ":")
+
+  # Combine the first three parts
+  result <- sapply(parts, extract_14)
+  result
+}
+
+get_binders <- function(df1, rank_cutoff){
+  EL_rank = grep("_EL_Rank", names(df1), value = TRUE)
+  HLAs = gsub("_EL_Rank", "", EL_rank)
+  
+  res = NULL
+  
+  for(i in 1:length(HLAs)){
+    w1 = which(df1[[EL_rank[i]]] < rank_cutoff)
+    
+    if(length(w1) > 0){
+      cols = c("Pos", "Peptide", "ID", 
+               paste0(HLAs[i], c("_EL_score", "_EL_Rank")))
+      df_i = data.frame(df1[w1,cols,drop=FALSE])
+      names(df_i)[4:5] = c("EL_score", "EL_Rank")
+      df_i$HLA = HLAs[i]
+      
+      res = rbind(res, df_i)
+    }
+  }
+  res
+}
+
+```
+
+
+## Read in selected mutations
+
+```{r}
+mutation_file = "step8_mut_data_HLA_I.tsv"
+
+mut_dat0 = fread(file.path(result_dir, mutation_file))
+dim(mut_dat0)
+mut_dat0[1:2,]
+
+mut_dat0$ID_WT = get_identity(mut_dat0$key_pro, "WT")
+mut_dat0$ID_MT = get_identity(mut_dat0$key_pro, "MT")
+
+dim(mut_dat0)
+mut_dat0[1:4,]
+
+table(mut_dat0$auc == "")
+```
+
+
+## Read in NetMHC results
+
+```{r}
+fnm = file.path(net_dir, "NetMHCpan_4.1b_mut_HLA_A_B.xls")
+nm_AB_mut = data.frame(fread(fnm, col.names = get_header(fnm), skip = 2))
+dim(nm_AB_mut)
+nm_AB_mut[1:2,c(1:5, (ncol(nm_AB_mut) - 5):ncol(nm_AB_mut))]
+
+fnm = file.path(net_dir, "NetMHCpan_4.1b_mut_HLA_C.xls")
+nm_C_mut = data.frame(fread(fnm, col.names = get_header(fnm), skip = 2))
+dim(nm_C_mut)
+nm_C_mut[1:2,c(1:5, (ncol(nm_C_mut) - 5):ncol(nm_C_mut))]
+
+table(nm_AB_mut$ID == nm_C_mut$ID)
+table(nm_AB_mut$Pos == nm_C_mut$Pos)
+table(nm_AB_mut$Peptide == nm_C_mut$Peptide)
+
+cols2rm = c("Ave", "NB")
+nm_mut = merge(nm_AB_mut[,-which(names(nm_AB_mut) %in% cols2rm)], 
+               nm_C_mut[,-which(names(nm_C_mut) %in% cols2rm)], 
+               by = c("Pos", "Peptide", "ID"))
+dim(nm_mut)
+nm_mut[1:2,c(1:5, (ncol(nm_mut) - 5):ncol(nm_mut))]
+
+fnm = file.path(net_dir, "NetMHCpan_4.1b_ref_HLA_A_B.xls")
+nm_AB_ref = data.frame(fread(fnm, col.names = get_header(fnm), skip = 2))
+dim(nm_AB_ref)
+nm_AB_ref[1:2, 1:8]
+
+fnm = file.path(net_dir, "NetMHCpan_4.1b_ref_HLA_C.xls")
+nm_C_ref = data.frame(fread(fnm, col.names = get_header(fnm), skip = 2))
+dim(nm_C_ref)
+nm_C_ref[1:2, 1:8]
+
+table(nm_AB_ref$ID == nm_C_ref$ID)
+table(nm_AB_ref$Pos == nm_C_ref$Pos)
+table(nm_AB_ref$Peptide == nm_C_ref$Peptide)
+
+nm_ref = merge(nm_AB_ref[,-which(names(nm_AB_ref) %in% cols2rm)], 
+               nm_C_ref[,-which(names(nm_C_ref) %in% cols2rm)], 
+               by = c("Pos", "Peptide", "ID"))
+dim(nm_ref)
+nm_ref[1:2,c(1:5, (ncol(nm_ref) - 5):ncol(nm_ref))]
+
+nm_mut$ID <- gsub("(_MT|_M)$", "", nm_mut$ID)
+nm_ref$ID <- gsub("(_WT|_W)$", "", nm_ref$ID)
+mut_dat0$ID <- gsub("(_WT|_W)$", "", mut_dat0$ID_WT)
+
+table(nm_ref$ID == nm_mut$ID)
+setdiff(nm_ref$ID, nm_mut$ID)
+table(nm_ref$Pos == nm_mut$Pos)
+table(nm_ref$Peptide == nm_mut$Peptide)
+
+table(mut_dat0$ID %in% nm_ref$ID)
+table(mut_dat0$ID %in% nm_mut$ID)
+```
+
+## Extract binders
+
+```{r}
+binders_mut = get_binders(nm_mut, rank_cutoff = 2)
+binders_ref = get_binders(nm_ref, rank_cutoff = 100)
+
+dim(binders_mut)
+dim(binders_ref)
+
+binders_mut[1:4,]
+binders_ref[1:4,]
+
+binders = merge(binders_mut, binders_ref, by = c("Pos", "ID", "HLA"), 
+                all.x = TRUE, all.y = FALSE, suffixes = c("_mut", "_ref"))
+
+dim(binders)
+binders[1:2,]
+table(is.na(binders$EL_Rank_mut))
+table(is.na(binders$EL_Rank_ref))
+
+table(binders$Peptide_mut == binders$Peptide_ref)
+
+binders = binders[-which(binders$Peptide_mut == binders$Peptide_ref),]
+dim(binders)
+binders[1:2,]
+
+table(binders$HLA)
+binders$HLA_gene = substr(binders$HLA, 1, 5)
+
+summary(binders$EL_Rank_ref)
+
+ggplot(binders, aes(x = EL_Rank_ref, y = EL_Rank_mut, col = HLA_gene)) + 
+  geom_point() + 
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", 
+                color = "gray40", linewidth = 1)
+
+ggplot(binders, aes(x = EL_Rank_mut, y = EL_score_mut, col = HLA_gene)) + 
+  geom_point()
+
+ggplot(binders, aes(x = EL_Rank_ref, y = EL_score_ref, col = HLA_gene)) + 
+  geom_point()
+
+table(binders$ID %in% mut_dat0$ID)
+table(mut_dat0$ID %in% binders$ID)
+```
+
+
+```{r fig.width = 8, fig.height=6}
+binders = merge(binders, mut_dat0, by = "ID")
+dim(binders)
+binders[1:2,]
+
+binders <- binders %>%
+  mutate(EL_Rank_diff = EL_Rank_mut - EL_Rank_ref)
+
+binders_reduced <- binders %>%
+  group_by(ID) %>%
+  summarise(
+    EL_Rank_diff = max(EL_Rank_diff, na.rm = TRUE),
+    EL_Rank_mut = min(EL_Rank_mut, na.rm = TRUE),
+    EL_Rank_ref = min(EL_Rank_ref, na.rm = TRUE),
+    Freq        = unique(Freq, na.rm = TRUE),
+    neoantigen  = unique(neoantigen, na.rm = TRUE),
+    nTCRA       = unique(nTCRA, na.rm = TRUE),
+    nTCRB       = unique(nTCRB, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+library(patchwork)  # for arranging multiple plots
+
+# Scatter: Freq vs EL_Rank_mut
+p1 <- ggplot(binders_reduced, aes(x = log10(Freq), y = EL_Rank_mut)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  labs(x = "log10(Freq)", y = "EL Rank (mutation)")
+
+# Scatter: nTCRA vs EL_Rank_mut
+p2 <- ggplot(binders_reduced, aes(x = nTCRA, y = EL_Rank_mut)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  labs(x = "nTCRA", y = "EL Rank (mutation)")
+
+# Scatter: nTCRB vs EL_Rank_mut
+p3 <- ggplot(binders_reduced, aes(x = nTCRB, y = EL_Rank_mut)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  labs(x = "nTCRB", y = "EL Rank (mutation)")
+
+# Boxplot: EL_Rank_ref vs neoantigen
+p4 <- ggplot(binders_reduced, aes(x = as.factor(neoantigen), y = EL_Rank_mut, 
+                                  fill = neoantigen)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  scale_fill_manual(values = c("#56B4E9", "#E69F00")) +
+  labs(x = "Neoantigen", y = "EL Rank (mutation)")
+
+# Combine all plots
+(p1 | p2) / (p3 | p4)
+
+
+
+# Scatter: EL_diff vs Freq
+p1 <- ggplot(binders_reduced, aes(x = log10(Freq), y = EL_Rank_diff)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  labs(x = "log10(Freq)", y = "EL_Rank diff")
+
+# Scatter: EL_diff vs nTCRA
+p2 <- ggplot(binders_reduced, aes(x = nTCRA, y = EL_Rank_diff)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  labs(x = "nTCRA", y = "EL_Rank diff")
+
+# Scatter: EL_diff vs nTCRB
+p3 <- ggplot(binders_reduced, aes(x = nTCRB, y = EL_Rank_diff)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  labs(x = "nTCRB", y = "EL_Rank diff")
+
+# Boxplot: EL_diff vs neoantigen
+p4 <- ggplot(binders_reduced, aes(x = as.factor(neoantigen), y = EL_Rank_diff, 
+                                  fill = neoantigen)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_bw(base_size = 14) +
+  scale_fill_manual(values = c("#56B4E9", "#E69F00")) +
+  labs(x = "Neoantigen", y = "EL_Rank diff")
+
+# Combine all plots into one figure
+(p1 | p2) / (p3 | p4)
+
+
+table(table(binders$ID))
+table(binders$neoantigen, binders$EL_Rank_mut < binders$EL_Rank_ref)
+
+fwrite(binders, file.path(net_dir, "binders_HLA_I.csv"))
+```
+
+
+# Prioritize neoantigens for validation
+
+## Select those with high scores
+```{r}
+table(binders$EL_score_mut > 0.25, binders$EL_Rank_mut < 1)
+table(binders$EL_score_mut > 0.25, binders$EL_Rank_diff < 0)
+
+grp1 = binders[binders$EL_score_mut > 0.25 & binders$EL_Rank_diff < 0,]
+dim(grp1)
+
+cols = c("ID", "key", "key_pro", "HLA", "Peptide_mut", "EL_score_mut")
+cols = c(cols, "EL_Rank_mut", "Peptide_ref", "EL_score_ref", "EL_Rank_ref")
+cols = c(cols, "wildtype", "mutant", "Pos")
+cols = c(cols, "cancer", "auc", "nTCRA", "nTCRB", "neoantigen", "Freq")
+
+cols2show = c("ID", "HLA", "Peptide_mut", "EL_score_mut", "EL_score_ref", 
+              "cancer", "auc", "nTCRA", "nTCRB", "neoantigen", "Freq")
+
+grp1 = grp1[,cols]
+grp1[order(grp1$Freq, decreasing = TRUE), cols2show]
+
+grp1_sub = grp1[grp1$HLA %in% c("HLA.A02.01", "HLA.B07.02"), cols2show]
+grp1_sub[order(grp1_sub$Freq, decreasing = TRUE),]
+
+fwrite(grp1, file.path(net_dir, "binders_HLA_I_filtered.csv"))
+
+```
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

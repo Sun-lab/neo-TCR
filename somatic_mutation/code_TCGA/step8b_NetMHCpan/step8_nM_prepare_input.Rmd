@@ -1,0 +1,235 @@
+---
+title: "Prepare input for NetMHC"
+author: "Wei Sun"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: false
+  df_print: paged
+---
+
+```{r load_libraries, warning = FALSE, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpointdensity)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(ggrepel)
+library(biomaRt)
+library(Biostrings)
+library(GenomicRanges)
+library(dplyr)
+library(viridis)
+
+theme_set(theme_classic())
+
+result_dir = "~/research/data/TCR/TCGA/_results"
+```
+
+# Read in data
+
+## Load mutation information
+
+```{r}
+mut_data = fread(file.path(result_dir, "step7c_mutations_peptides_17.tsv"))
+dim(mut_data)
+mut_data[1:2,]
+
+length(unique(mut_data$key))
+
+table(nchar(mut_data$wildtype), nchar(mut_data$mutant))
+mut_data = mut_data[nchar(wildtype) == 17 & nchar(mutant) == 17,]
+dim(mut_data)
+
+mut_data_ii = fread(file.path(result_dir, "step7c_mutations_peptides_29.tsv"))
+dim(mut_data_ii)
+mut_data_ii[1:2,]
+
+length(unique(mut_data_ii$key))
+
+table(nchar(mut_data_ii$wildtype), nchar(mut_data_ii$mutant))
+mut_data_ii = mut_data_ii[nchar(wildtype) == 29 & nchar(mutant) == 29,]
+dim(mut_data_ii)
+```
+
+## Read in selected mutations
+
+### Mutations included in cross valiation study
+```{r}
+mutation_file = "cv_optimal_pcut_both_mut_cancer_combos.tsv"
+
+mut_dat0 = fread(file.path(result_dir, "_cross_validation", mutation_file))
+dim(mut_dat0)
+mut_dat0[1:2,]
+
+mut_dat2 <- mut_dat0[, .(cancer, auc, pcut_A, pcut_B, key_pro)]
+
+# order by key_pro and descending auc
+setorder(mut_dat2, key_pro, -auc)
+
+# collapse rows with same key_pro
+mut_dat_cv <- mut_dat2[, .(
+  cancer  = paste(cancer, collapse = ","),
+  auc     = paste(auc, collapse = ","),
+  pcut_A  = paste(pcut_A, collapse = ","),
+  pcut_B  = paste(pcut_B, collapse = ",")
+), by = key_pro]
+
+dim(mut_dat_cv)
+mut_dat_cv[1:5,]
+```
+
+### Mutations that are associated with many TCRs
+```{r}
+mut_dat1 = fread(file.path(result_dir, "step8_mutation_by_nTCR.tsv"))
+dim(mut_dat1)
+mut_dat1[1:2,]
+table(mut_dat1$neoantigen, mut_dat1$nTCRA >= 30 & mut_dat1$nTCRB >= 10)
+table(mut_dat1$neoantigen, mut_dat1$nTCRA >= 50 & mut_dat1$nTCRB >= 30)
+
+setnames(mut_dat1, "mutation", "key_pro")
+
+table(mut_dat1$Freq.x == mut_dat1$Freq.y)
+mut_dat1$Freq <- mut_dat1$Freq.x
+mut_dat1$Freq.y <- NULL
+mut_dat1$Freq.x <- NULL
+mut_dat1$Variant_Classification <- NULL
+
+table(mut_dat1$nTCRA >= 50, mut_dat1$nTCRB >= 30)
+mut_dat_by_TCR = mut_dat1[nTCRA >=50 & nTCRB >= 30,]
+dim(mut_dat_by_TCR)
+mut_dat_by_TCR[1:2,]
+```
+
+# Prepare input for NetMHCpan4.1
+
+## Merge the data
+
+```{r}
+
+mut_data[, key_pro := paste(Hugo_Symbol, gsub("p.", "", HGVSp_Short, 
+                                              fixed = TRUE), sep=":")]
+
+dim(mut_data)
+mut_data[1:2,]
+
+table(mut_dat_cv$key_pro %in% mut_data$key_pro)
+setdiff(mut_dat_cv$key_pro, mut_data$key_pro)
+table(mut_dat_by_TCR$key_pro %in% mut_data$key_pro)
+
+mut_dat_by_TCR[mut_dat_by_TCR$key_pro %in% mut_dat_cv$key_pro,]
+
+mut_data = mut_data[key_pro %in% union(mut_dat_cv$key_pro, mut_dat_by_TCR$key_pro)]
+dim(mut_data)
+mut_data[1:2,]
+
+mut_data = merge(mut_data, mut_dat_cv, all.x = TRUE, all.y = FALSE)
+mut_data = merge(mut_data, mut_dat1, all.x = TRUE, all.y = FALSE)
+
+mut_data[,Tumor_Sample_Barcode := NULL]
+mut_data[,participant := NULL]
+mut_data[,n := NULL]
+
+dim(mut_data)
+mut_data[1:2,]
+
+table(mut_data$neoantigen)
+
+fwrite(mut_data, file=file.path(result_dir, "step8_mut_data_HLA_I.tsv"), sep="\t")
+mut_data[neoantigen == TRUE,]
+
+```
+
+## Write out fasta files
+
+The input for NetMHCpan4.1 is a fasta file like the following. 
+```
+>seq1
+ASTPGHTIIYEAVCLHNDRTTIP
+```
+
+```{r}
+mut_data = mut_data[order(mut_data$key),]
+
+pep_ref = rep("", 2*nrow(mut_data))
+pep_mut = rep("", 2*nrow(mut_data))
+
+pep_ref[seq(1, length(pep_ref), 2)] = paste0(">", mut_data$key_pro, ":WT")
+pep_ref[seq(2, length(pep_ref), 2)] = mut_data$wildtype
+
+pep_mut[seq(1, length(pep_mut), 2)] = paste0(">", mut_data$key_pro, ":MT")
+pep_mut[seq(2, length(pep_mut), 2)] = mut_data$mutant
+
+cat(pep_ref, file=file.path(result_dir, "step8_nM_TCGA_peptides_ref.fasta"), sep="\n")
+cat(pep_mut, file=file.path(result_dir, "step8_nM_TCGA_peptides_mut.fasta"), sep="\n")
+```
+
+# Prepare input for NetMHCIIpan
+
+## Merge the data
+
+```{r}
+
+mut_data_ii[, key_pro := paste(Hugo_Symbol, gsub("p.", "", HGVSp_Short, 
+                                              fixed = TRUE), sep=":")]
+
+dim(mut_data_ii)
+mut_data_ii[1:2,]
+
+table(mut_dat_cv$key_pro %in% mut_data_ii$key_pro)
+setdiff(mut_dat_cv$key_pro, mut_data_ii$key_pro)
+table(mut_dat_by_TCR$key_pro %in% mut_data_ii$key_pro)
+setdiff(mut_dat_by_TCR$key_pro, mut_data_ii$key_pro)
+
+mut_data_ii = mut_data_ii[key_pro %in% union(mut_dat_cv$key_pro, mut_dat_by_TCR$key_pro)]
+dim(mut_data_ii)
+mut_data_ii[1:2,]
+
+mut_data_ii = merge(mut_data_ii, mut_dat_cv, all.x = TRUE, all.y = FALSE)
+mut_data_ii = merge(mut_data_ii, mut_dat1, all.x = TRUE, all.y = FALSE)
+
+mut_data_ii[,Tumor_Sample_Barcode := NULL]
+mut_data_ii[,participant := NULL]
+mut_data_ii[,n := NULL]
+
+dim(mut_data_ii)
+mut_data_ii[1:2,]
+
+fwrite(mut_data_ii, file=file.path(result_dir, "step8_mut_data_HLA_II.tsv"), sep="\t")
+mut_data_ii[neoantigen == TRUE,]
+
+```
+
+## Write out fasta files
+
+
+```{r}
+mut_data_ii = mut_data_ii[order(mut_data_ii$key),]
+
+pep_ref = rep("", 2*nrow(mut_data_ii))
+pep_mut = rep("", 2*nrow(mut_data_ii))
+
+pep_ref[seq(1, length(pep_ref), 2)] = paste0(">", mut_data_ii$key_pro, ":WT")
+pep_ref[seq(2, length(pep_ref), 2)] = mut_data_ii$wildtype
+
+pep_mut[seq(1, length(pep_mut), 2)] = paste0(">", mut_data_ii$key_pro, ":MT")
+pep_mut[seq(2, length(pep_mut), 2)] = mut_data_ii$mutant
+
+cat(pep_ref, file=file.path(result_dir, "step8_nM_TCGA_peptides_ref_HLA_II.fasta"), sep="\n")
+cat(pep_mut, file=file.path(result_dir, "step8_nM_TCGA_peptides_mut_HLA_II.fasta"), sep="\n")
+```
+
+
+# Session information
+```{r}
+gc()
+sessionInfo()
+```

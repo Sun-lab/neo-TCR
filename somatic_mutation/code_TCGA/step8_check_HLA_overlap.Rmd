@@ -281,6 +281,8 @@ p <- ggplot(df, aes(x = log10(nTCRA + 1), y = log10(nTCRB + 1))) +
 
 ggMarginal(p, type = "histogram", bins = 30, fill = "lightgreen", color = "black")
 
+table(df$neoantigen, df$nTCRA >= 30 & df$nTCRB >= 10)
+
 table(df$nTCRA >= 30, df$nTCRB >= 10)
 df[nTCRA >=30 & nTCRB >= 10,]
 
