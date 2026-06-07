@@ -6,10 +6,6 @@ Identification and characterization of neoantigen-specific TCRs and the correspo
 
 ## Repository Layout
 
-- **classify_cancer_reactive_T**  
-  Classify cancer-reactive T cells using gene expression signatures and study-aware criteria.  
-  Outputs per-cell labels (cancer-reactive vs. other).
-
 - **classify_TCR_by_NN**  
   Classify cancer-reactive TCRs using scRNA-/scTCR-seq data and neural networks trained on cell-level labels.
 
