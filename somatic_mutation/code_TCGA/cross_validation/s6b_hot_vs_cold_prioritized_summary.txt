@@ -1,0 +1,4 @@
+chain	prioritized_combos	auc_hot	hot_95ci	auc_cold	cold_95ci	delong_p	n_mutpos_hot	n_mutpos_cold	depth_adj_hot_auc
+alpha	9	0.83	[0.726, 0.933]	0.729	[0.598, 0.859]	0.234	17	15	0.752
+beta	12	0.69	[0.580, 0.801]	0.575	[0.491, 0.659]	0.102	20	19	0.663
+both	32	0.717	[0.658, 0.776]	0.627	[0.569, 0.686]	0.0336	70	60	0.691

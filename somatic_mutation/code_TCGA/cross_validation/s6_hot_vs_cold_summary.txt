@@ -1,0 +1,4 @@
+chain	evaluable_cells	mean_auc_hot	mean_auc_cold	wilcoxon_p	median_depth_hot	median_depth_cold	depthmatched_hot	depthmatched_cold	depthmatched_p
+alpha	494	0.528	0.512	0.0413	1	0	0.504	0.512	0.207
+beta	483	0.506	0.503	0.213	0	0	0.5	0.503	0.00124
+both	494	0.533	0.515	0.0292	1	1	0.508	0.515	0.276
