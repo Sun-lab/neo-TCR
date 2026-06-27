@@ -14,29 +14,8 @@ This repository contains the code and curated data for identifying and character
 
 ---
 
-## Overview
+## Overview Neo-TCR — neoantigen-specific TCRs and neoantigens
 
-Not all tumor-infiltrating T cells are cancer-reactive; many are bystanders. This project develops
-two complementary, sequencing-based computational platforms:
-
-### 1. CAT — Cancer-Associated T cells
-Harmonizes cancer-reactive gene expression signatures from prior studies and applies them to an
-**atlas of ~1 million T cells** (≈500k CD8⁺ and ≈500k CD4⁺) from **383 patients across 11 cancer
-types**, pooled from five single-cell studies. A four-step workflow identifies high-confidence CR
-T cells:
-
-1. **Initial CR set** — cells with high positive and low negative signature scores.
-2. **Intersect** with study-specific CR clusters (clusters enriched for the above).
-3. **Refine** — keep cells from clonally expanded TCRs and drop TCRs annotated to non-human
-   antigens (via VDJdb).
-4. **Neural-network filter** — an autoencoder-based classifier scores genome-wide expression;
-   cells with score > 0.5 are retained.
-
-This yields **62,188 CD8⁺ and 7,322 CD4⁺ CR T cells** (~70k total) with per-cell signature scores
-and TCR sequences. The baseline abundance of CD8⁺ CR T cells predicts response to immune
-checkpoint inhibitor therapy.
-
-### 2. Neo-TCR — neoantigen-specific TCRs and neoantigens
 A high-throughput framework that screens for **public neoantigens** (shared across patients) and
 their cognate TCRs by association analysis. Using TCR and somatic mutation data for **8,463 TCGA
 patients**, each TCR–mutation pair is tested with logistic regression. Somatic mutations whose
