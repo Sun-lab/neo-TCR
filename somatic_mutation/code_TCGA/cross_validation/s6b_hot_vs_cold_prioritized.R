@@ -1,5 +1,5 @@
 # =====================================================================
-# Reviewer 3.6 (focused): hot vs cold performance on the PRIORITIZED
+# Hot vs cold performance on the PRIORITIZED
 # mutations (the cv_optimal_pcut combos that pass the FDR filter and are
 # reported in Fig 2C). Per-combo strata are tiny, so we POOL patients
 # across prioritized mutations (same idea as s3's get_auc aggregator):
@@ -158,7 +158,7 @@ res[["both"]] = summarise(acc_both, "both")
 cat("\n--- table ---\n"); print(rbindlist(res))
 
 # ---------------------------------------------------------------------
-# Write summary tables into the repo (Reviewer comment 3.6, prioritized
+# Write summary tables into the repo (prioritized
 # mutations). Reads the pooled patient-level tables just written so the
 # block is self-contained / re-runnable.
 # ---------------------------------------------------------------------

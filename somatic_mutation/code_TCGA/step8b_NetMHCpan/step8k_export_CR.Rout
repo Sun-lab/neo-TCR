@@ -1,0 +1,179 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: aarch64-apple-darwin20 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> # =====================================================================
+> # Intersect mutation-associated TCRs with cancer-reactive (CR) TCRs and
+> # export tables for the CR-vs-nonCR TCRdist analysis.
+> # CR TCRs = unique TRA_cdr3 / TRB_cdr3 from the final cancer-reactive cells
+> # (CD8_CAT_final.tsv U CD4_CAT_final.tsv). Associated TCRs = full-TCGA
+> # predictors (pA=0.1/pB=0.2), same set used in the earlier TCRdist analysis.
+> # =====================================================================
+> suppressMessages({library(data.table)})
+> dd="~/research/data/TCR/TCGA"; rd=file.path(dd,"_results")
+> CATd="~/research/CAT/data"
+> step8b="/Users/wsun/research/GitHub/neo-TCR/somatic_mutation/code_TCGA/step8b_NetMHCpan"
+> outdir=file.path(step8b,"step8h_tcrdist")
+> 
+> ## CR TCR sets (union of CD8 + CD4 final cancer-reactive cells)
+> cd8=fread(file.path(CATd,"CD8_CAT_final.tsv")); cd4=fread(file.path(CATd,"CD4_CAT_final.tsv"))
+> CR_a=unique(c(cd8$TRA_cdr3, cd4$TRA_cdr3)); CR_a=CR_a[CR_a!="" & !is.na(CR_a)]
+> CR_b=unique(c(cd8$TRB_cdr3, cd4$TRB_cdr3)); CR_b=CR_b[CR_b!="" & !is.na(CR_b)]
+> cat(sprintf("CR cells: CD8=%d CD4=%d ; unique CR CDR3: alpha=%d beta=%d\n",
++             nrow(cd8),nrow(cd4),length(CR_a),length(CR_b)))
+CR cells: CD8=62188 CD4=7322 ; unique CR CDR3: alpha=10055 beta=10100
+> 
+> ## associated TCRs for ALL mutations (pA=0.1/pB=0.2 predictors)
+> TCR_pred=readRDS(file.path(rd,"TCGA_res_TCR_predictors_pval_pA_1.0e-01_pB_2.0e-01.rds"))
+> keys=names(TCR_pred)[!sapply(TCR_pred,is.null)]
+> assoc=rbindlist(lapply(keys,function(k){
++   pr=TCR_pred[[k]]
++   rbind(
++     if(length(pr$TCRA)) data.table(mut=k,chain="alpha",cdr3=pr$TCRA) else NULL,
++     if(length(pr$TCRB)) data.table(mut=k,chain="beta", cdr3=pr$TCRB) else NULL)
++ }))
+> setnames(assoc,"mut","key")
+> assoc[,is_CR := (chain=="alpha" & cdr3 %in% CR_a) | (chain=="beta" & cdr3 %in% CR_b)]
+> fwrite(assoc, file.path(outdir,"step8k_assoc_all.tsv"), sep="\t")
+> 
+> ## diagnostics
+> cat(sprintf("\nmutations with predictors: %d ; associated TCR rows: alpha=%d beta=%d\n",
++             length(keys), assoc[chain=="alpha",.N], assoc[chain=="beta",.N]))
+
+mutations with predictors: 4610 ; associated TCR rows: alpha=63835 beta=22537
+> cat(sprintf("associated TCRs that are CR: alpha=%d/%d (%.1f%%)  beta=%d/%d (%.1f%%)\n",
++             assoc[chain=="alpha" & is_CR,.N], assoc[chain=="alpha",.N], 100*mean(assoc[chain=="alpha"]$is_CR),
++             assoc[chain=="beta" & is_CR,.N],  assoc[chain=="beta",.N],  100*mean(assoc[chain=="beta"]$is_CR)))
+associated TCRs that are CR: alpha=22791/63835 (35.7%)  beta=4256/22537 (18.9%)
+> 
+> ov=assoc[,.(n_assoc=.N, n_CR=sum(is_CR), n_nonCR=sum(!is_CR)), by=.(key,chain)]
+> for(ch in c("alpha","beta")){
++   q=ov[chain==ch & n_CR>=5][order(-n_CR)]
++   cat(sprintf("\n[%s] mutations with >=5 CR-associated TCRs: %d\n", ch, nrow(q)))
++   if(nrow(q)) print(q[,.(key,n_assoc,n_CR,n_nonCR)])
++ }
+
+[alpha] mutations with >=5 CR-associated TCRs: 2024
+                         key n_assoc  n_CR n_nonCR
+                      <char>   <int> <int>   <int>
+   1:   KRAS:12:25398285:C:A      98    34      64
+   2:   ANK3:10:61823946:T:-      60    31      29
+   3:   BRAF:7:140453136:A:T     117    29      88
+   4:   NRAS:1:115256529:T:C      79    28      51
+   5:    TP53:17:7578442:T:C      72    28      44
+  ---                                             
+2020: ZNF841:19:52568865:C:A      17     5      12
+2021: ZNF850:19:37240200:C:T      12     5       7
+2022: ZNF878:19:12155504:A:-      14     5       9
+2023: ZNF879:5:178460040:G:A      10     5       5
+2024:  ZNF93:19:20044426:G:T      14     5       9
+
+[beta] mutations with >=5 CR-associated TCRs: 75
+                         key n_assoc  n_CR n_nonCR
+                      <char>   <int> <int>   <int>
+ 1:     GTF2I:7:74146970:T:A     113    13     100
+ 2:     BRAF:7:140453136:A:T      81    11      70
+ 3:     BRAF:7:140453137:C:T      46    10      36
+ 4:      TP53:17:7574003:G:A      40     9      31
+ 5:    ARID1A:1:27106354:C:T      21     8      13
+ 6:      TP53:17:7577120:C:T      52     8      44
+ 7:      TP53:17:7578406:C:T      43     8      35
+ 8:    ZC3H4:19:47572412:C:G      28     8      20
+ 9:     KRAS:12:25398285:C:A      46     7      39
+10:      PGM5:9:70993145:A:G      39     7      32
+11:   PIK3CA:3:178936082:G:A      47     7      40
+12:       RAC1:7:6426892:C:T      18     7      11
+13:    RQCD1:2:219449406:C:T      26     7      19
+14:    SGOL2:2:201436992:A:-      21     7      14
+15:      TP53:17:7577121:G:A      51     7      44
+16:    XYLT2:17:48433967:C:-      20     7      13
+17:   ACVR2A:2:148657041:A:-      21     6      15
+18:     ANK3:10:61823946:T:-      19     6      13
+19:     ASB17:1:76387916:T:-      14     6       8
+20:    CDKN2A:9:21971120:G:A      24     6      18
+21:       DMD:X:32407761:G:A       8     6       2
+22:     DOCK3:3:51417604:C:-      47     6      41
+23:      GLI3:7:42005573:G:-      12     6       6
+24:      KIF6:6:39580993:A:-      19     6      13
+25:  KIRREL2:19:36357214:C:-      19     6      13
+26:     KRAS:12:25398284:C:A      48     6      42
+27:    MPRIP:17:17046886:C:-      17     6      11
+28:     NRAS:1:115256530:G:T      38     6      32
+29:  PCDHGB4:5:140767861:C:T       9     6       3
+30:   PIK3CA:3:178917478:G:A      21     6      15
+31:   PIK3CA:3:178938934:G:A      26     6      20
+32:     RAB42:1:28920547:G:-      15     6       9
+33:      TP53:17:7577539:G:A      36     6      30
+34:      TP53:17:7578268:A:C      22     6      16
+35:      TP53:17:7578394:T:C      22     6      16
+36:    U2AF1:21:44524456:G:A      24     6      18
+37:    AKT1:14:105246551:C:T      24     5      19
+38: ARHGAP35:19:47423229:C:T      12     5       7
+39:    ARID1A:1:27105931:G:-      21     5      16
+40:  CAMSAP2:1:200827020:A:-      33     5      28
+41:     CD1C:1:158261127:C:T      13     5       8
+42:     DPPA3:12:7868018:C:T      12     5       7
+43:  FAM153B:5:175528581:G:A      20     5      15
+44:    FBXW7:4:153249385:G:A      32     5      27
+45:      FLNB:3:58089788:G:-      22     5      17
+46:    GRIN2A:16:9857436:C:T      19     5      14
+47:  GYLTL1B:11:45948373:C:-      16     5      11
+48:     IDH1:2:209113113:G:A      22     5      17
+49:    KEAP1:19:10600447:G:A      16     5      11
+50:      KLF3:4:38690460:A:-      18     5      13
+51:   KLHDC7A:1:18809378:G:A      18     5      13
+52:     LARP4B:10:890939:T:-      38     5      33
+53:      MET:7:116418932:G:A      12     5       7
+54:   MS4A6E:11:60105331:G:A      12     5       7
+55:     NBEA:13:35733663:A:-      16     5      11
+56:     NRAS:1:115256529:T:C      32     5      27
+57:    OR1N2:9:125316085:G:A       7     5       2
+58:    OR2M2:1:248343781:C:T       9     5       4
+59:    OR2M3:1:248367150:C:T      11     5       6
+60:  PLEKHA6:1:204228411:C:-      38     5      33
+61:    PPM1D:17:58740624:A:-      14     5       9
+62:    RGPD3:2:107049684:C:T      17     5      12
+63:      RPL22:1:6257785:T:-      44     5      39
+64:     RYR2:1:237947421:G:A      13     5       8
+65:    SCN11A:3:38949441:T:-      21     5      16
+66:      TAP2:6:32805788:G:-      16     5      11
+67:      TP53:17:7577548:C:T      27     5      22
+68:      TP53:17:7577580:T:C      11     5       6
+69:      TP53:17:7578555:C:T      19     5      14
+70:  TRIM49C:11:89774338:A:C      20     5      15
+71:     TTI1:20:36627613:G:-      26     5      21
+72:      XPO1:2:61719472:C:T      15     5      10
+73:   ZBTB20:3:114058003:G:-      43     5      38
+74:   ZC3H13:13:46577381:T:-      11     5       6
+75:     ZFHX4:8:77764324:C:T       7     5       2
+                         key n_assoc  n_CR n_nonCR
+> ## also report within the 25 candidate-neoantigen mutations
+> cand=unique(fread(file.path(step8b,"step8g_neoantigen_list.tsv"))$key)
+> cat(sprintf("\nof the %d candidate-neoantigen mutations, with >=5 CR: alpha=%d beta=%d\n",
++             length(cand), ov[chain=="alpha" & key%in%cand & n_CR>=5,.N],
++             ov[chain=="beta" & key%in%cand & n_CR>=5,.N]))
+
+of the 25 candidate-neoantigen mutations, with >=5 CR: alpha=23 beta=8
+> fwrite(ov, file.path(outdir,"step8k_overlap_counts.tsv"), sep="\t")
+> cat("\nwrote step8k_assoc_all.tsv, step8k_overlap_counts.tsv\n")
+
+wrote step8k_assoc_all.tsv, step8k_overlap_counts.tsv
+> 
+> proc.time()
+   user  system elapsed 
+  0.973   0.088   1.093 

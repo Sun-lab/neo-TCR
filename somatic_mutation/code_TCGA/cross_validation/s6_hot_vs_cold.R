@@ -1,5 +1,5 @@
 # =====================================================================
-# Reviewer comment 3.6: does Neo-TCR's mutation-prediction performance
+# Does the mutation-prediction performance
 # differ between "hot" and "cold" tumors?
 #
 # Design (mirrors s3_cross_validation_res.Rmd):
@@ -279,7 +279,7 @@ for(ch in c("beta","alpha","both")){
 cat("\nwrote: ", file.path(out_dir, "s6_hot_vs_cold_per_cell.tsv"), "\n")
 
 # ---------------------------------------------------------------------
-# Write a compact summary table into the repo (Reviewer comment 3.6,
+# Write a compact summary table into the repo (
 # all evaluable mutations). Reads the per-cell table just written so the
 # block is self-contained / re-runnable.
 # ---------------------------------------------------------------------
@@ -366,6 +366,7 @@ auc_both_merged <- function(pairs){
       bi = which.max(aucs)
       out[[length(out)+1]] = data.table(chain="both", cancer=c_type, mut=mj, auc=max(aucs),
         best_pair=sprintf("%.2g/%.2g", pairs[[bi]][1], pairs[[bi]][2]),
+        auc_pair1=aucs[1], auc_pair2=aucs[2], auc_pair3=aucs[3],
         n_pos=sum(y==1), n_neg=sum(y==0))
     }
   }
@@ -398,3 +399,33 @@ for(i in seq_along(chains_p)){
 }
 dev.off()
 cat("wrote: s6_auc_density_paper_criteria.pdf, s6_auc_paper_criteria_per_cell.tsv\n")
+
+# ---------------------------------------------------------------------
+# Additional plot: combined alpha+beta AUC distribution at EACH of the
+# three consensus (pcut_A, pcut_B) pairs separately (not the best-of-3).
+# Each single pair is a clean null (mean ~ 0.5); the looser pairs recover
+# the high-AUC (>0.8) signal cells that the strictest pair (0.01/0.05)
+# misses. Uses the per-pair AUCs already computed in auc_both_merged().
+# ---------------------------------------------------------------------
+db = allf[chain == "both"]
+pair_cols = c("auc_pair1","auc_pair2","auc_pair3")
+pair_lab  = sapply(PAIRS, function(pp) sprintf("alpha p<%.2g, beta p<%.2g", pp[1], pp[2]))
+cols3 = c("#3b528b","#21908c","#5dc863")
+aucs_list = lapply(pair_cols, function(cl) db[[cl]][!is.na(db[[cl]])])
+ymax3 = max(sapply(aucs_list, function(a){ h = hist(a, breaks=brk, plot=FALSE)
+  max(log1p(h$counts[h$mids>=XL[1] & h$mids<=XL[2]])) }))
+pdf("s6_auc_density_both_3pairs.pdf", width = 6.5, height = 8)
+par(mfrow = c(3,1), mar = c(4,4.2,2.2,1))
+for(i in 1:3){
+  a = aucs_list[[i]]; h = hist(a, breaks=brk, plot=FALSE)
+  plot(h$mids, log1p(h$counts), type="h", lwd=3, lend=1, col=cols3[i],
+       xlim=XL, ylim=c(0, ymax3*1.08), xlab="AUC (combined alpha+beta, leave-one-cancer-out CV)",
+       ylab="log(1 + count)", main=sprintf("combined predictor: %s", pair_lab[i]))
+  abline(v=0.5, lty=2, col="grey40")
+  legend("topright", bty="n", cex=0.95,
+         legend=c(sprintf("cells: %d", length(a)), sprintf("below 0.5:  %d", sum(a<0.5)),
+                  sprintf("above 0.5:  %d", sum(a>0.5)), sprintf("AUC>0.8:  %d", sum(a>0.8)),
+                  sprintf("mean AUC = %.3f", mean(a))))
+}
+dev.off()
+cat("wrote: s6_auc_density_both_3pairs.pdf\n")

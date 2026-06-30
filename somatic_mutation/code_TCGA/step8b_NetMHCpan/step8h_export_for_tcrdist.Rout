@@ -1,0 +1,123 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: aarch64-apple-darwin20 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> # =====================================================================
+> # Export tables for the TCRdist analysis of candidate-neoantigen TCRs.
+> # For each candidate neoantigen mutation (step8g, HLA-I, E>0.05) export its
+> # associated TCRs (alpha/beta, full-TCGA predictors pA=0.1/pB=0.2); export
+> # the eligible control universe of TCRs (all TCRs tested in the association
+> # screen) with each TCR's carrier count (population-frequency numerator) and
+> # CDR3 length, used to draw frequency- and length-matched control sets.
+> # =====================================================================
+> suppressMessages({library(data.table)})
+> dd="~/research/data/TCR/TCGA"; rd=file.path(dd,"_results")
+> step8b="/Users/wsun/research/GitHub/neo-TCR/somatic_mutation/code_TCGA/step8b_NetMHCpan"
+> outdir=file.path(step8b,"step8h_tcrdist"); dir.create(outdir, showWarnings=FALSE)
+> 
+> ## candidate neoantigen mutations (unique keys in step8g list)
+> lst=fread(file.path(step8b,"step8g_neoantigen_list.tsv"))
+> keys=unique(lst$key)
+> mm=unique(fread(file.path(rd,"step8_mut_data_HLA_I.tsv"))[,.(key,key_pro)])
+> 
+> ## associated TCRs per mutation/chain
+> TCR_pred=readRDS(file.path(rd,"TCGA_res_TCR_predictors_pval_pA_1.0e-01_pB_2.0e-01.rds"))
+> assoc=rbindlist(lapply(keys, function(k){
++   pr=TCR_pred[[k]]; if(is.null(pr)) return(NULL)
++   kp=mm$key_pro[match(k,mm$key)]
++   rbind(
++     if(length(pr$TCRA)) data.table(mut=k,key_pro=kp,chain="alpha",cdr3=pr$TCRA) else NULL,
++     if(length(pr$TCRB)) data.table(mut=k,key_pro=kp,chain="beta", cdr3=pr$TCRB) else NULL)
++ }))
+> setnames(assoc,"mut","key")
+> fwrite(assoc, file.path(outdir,"assoc_tcrs.tsv"), sep="\t")
+> 
+> ## eligible control universe = unique tested TCRs (+ carrier count = TCR_freq)
+> pool_a=unique(fread(file.path(rd,"TCR_alpha_mut_asso_rd_x_with_ct.tsv"),
++                     select=c("TCR","TCR_freq"))[,.(cdr3=TCR,carrier_count=TCR_freq)])
+> pool_b=unique(fread(file.path(rd,"TCR_beta_mut_asso_rd_x_with_ct.tsv"),
++                     select=c("TCR","TCR_freq"))[,.(cdr3=TCR,carrier_count=TCR_freq)])
+> pool_a[,len:=nchar(cdr3)]; pool_b[,len:=nchar(cdr3)]
+> fwrite(pool_a, file.path(outdir,"control_pool_alpha.tsv"), sep="\t")
+> fwrite(pool_b, file.path(outdir,"control_pool_beta.tsv"),  sep="\t")
+> 
+> ## diagnostics
+> ac=assoc[,.N,by=.(key_pro,chain)]
+> cat(sprintf("candidate neoantigen mutations: %d\n", length(keys)))
+candidate neoantigen mutations: 25
+> cat(sprintf("associated TCRs: alpha=%d beta=%d (unique cdr3: a=%d b=%d)\n",
++             assoc[chain=="alpha",.N], assoc[chain=="beta",.N],
++             uniqueN(assoc[chain=="alpha"]$cdr3), uniqueN(assoc[chain=="beta"]$cdr3)))
+associated TCRs: alpha=1119 beta=670 (unique cdr3: a=730 b=430)
+> cat("\nset size (>=5 needed) per chain:\n")
+
+set size (>=5 needed) per chain:
+> print(dcast(ac, key_pro~chain, value.var="N", fill=0)[order(-beta)])
+               key_pro alpha  beta
+                <char> <int> <int>
+ 1:        GTF2I:L424H    53   113
+ 2:         TP53:R273H    64    52
+ 3:          KRAS:G12V    72    48
+ 4:  DOCK3:P1852Qfs*45    58    47
+ 5:  ZBTB20:P692Lfs*43    55    43
+ 6:        PIK3CA:R88Q    50    40
+ 7:         TP53:R196*    56    40
+ 8:         TP53:R213*    65    40
+ 9:      B2M:L15Ffs*41    57    30
+10:     SMC2:T751Pfs*9    50    23
+11: EFCAB13:S342Afs*25    41    22
+12:         TP53:L194R    28    22
+13:      TRIM49C:S327R    41    20
+14:        NFE2L2:E79Q    42    19
+15:   MPRIP:P353Qfs*30    43    17
+16:         TP53:C176F    53    15
+17: SLC12A7:H686Tfs*11    27    13
+18:        ERBB3:V104M    55    12
+19:        FBXW7:R479Q    35    11
+20:          KRAS:G12S    39     9
+21:   AXIN2:G665Afs*24    65     8
+22:    MAP9:K567Rfs*13    14     8
+23: SLC26A7:K333Nfs*20    22     8
+24:      NES:T393Hfs*9    20     7
+25:        ADAM7:R225Q    14     3
+               key_pro alpha  beta
+> cat(sprintf("\nmutations with >=5 alpha: %d ; >=5 beta: %d\n",
++             ac[chain=="alpha" & N>=5, .N], ac[chain=="beta" & N>=5, .N]))
+
+mutations with >=5 alpha: 25 ; >=5 beta: 24
+> cat(sprintf("\ncontrol pool: alpha=%d beta=%d unique TCRs\n", nrow(pool_a), nrow(pool_b)))
+
+control pool: alpha=2044 beta=863 unique TCRs
+> cat("carrier_count quantiles (alpha):\n"); print(quantile(pool_a$carrier_count,c(0,.25,.5,.75,.9,.99,1)))
+carrier_count quantiles (alpha):
+  0%  25%  50%  75%  90%  99% 100% 
+   5    5    7    9   15   42  265 
+> cat("carrier_count quantiles (beta):\n");  print(quantile(pool_b$carrier_count,c(0,.25,.5,.75,.9,.99,1)))
+carrier_count quantiles (beta):
+   0%   25%   50%   75%   90%   99%  100% 
+ 5.00  5.00  6.00  8.00 13.00 32.38 87.00 
+> cat("assoc TCR carrier counts present in pool? alpha:",
++     mean(assoc[chain=="alpha"]$cdr3 %in% pool_a$cdr3)*100,"%  beta:",
++     mean(assoc[chain=="beta"]$cdr3 %in% pool_b$cdr3)*100,"%\n")
+assoc TCR carrier counts present in pool? alpha: 100 %  beta: 100 %
+> cat("wrote tables to step8h_tcrdist/\n")
+wrote tables to step8h_tcrdist/
+> 
+> proc.time()
+   user  system elapsed 
+  0.223   0.038   0.407 

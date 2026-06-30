@@ -1,0 +1,182 @@
+
+R version 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: aarch64-apple-darwin20 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> # =====================================================================
+> # For each somatic mutation, count how many HLA alleles
+> # can present at least one of its mutated (neo-)peptides, and how many
+> # mutations is each HLA associated with?
+> #
+> # A mutated peptide is "presented" by an HLA if (NetMHCpan/NetMHCIIpan
+> # eluted-ligand %rank):
+> #   (1) it overlaps the mutated residue (mutant peptide != wild-type), AND
+> #   (2) mutant %rank < cutoff (default 2%), AND
+> #   (3) mutant %rank < wild-type %rank (the mutation improves presentation).
+> #
+> # Builds, separately for HLA-I (NetMHCpan 4.1, 23 alleles) and HLA-II
+> # (NetMHCIIpan 4.3, 22 alleles), a mutation x HLA matrix whose entries are
+> # the number of presented neo-peptides; plus per-mutation and per-HLA
+> # summaries, heatmaps, and a top-20 bar plot of # mutations per HLA.
+> # =====================================================================
+> suppressMessages({library(data.table); library(ggplot2); library(patchwork)})
+> 
+> net_dir = "~/research/data/TCR/TCGA/_results/netMHC"
+> out_dir = "/Users/wsun/research/GitHub/neo-TCR/somatic_mutation/code_TCGA/step8b_NetMHCpan"
+> CUT = 2          # primary EL %rank cutoff (use 0.5 for a stricter sensitivity check)
+> 
+> # ---- read NetMHCpan .xls (multi-row header: allele name spans a block) ----
+> get_header <- function(fnm){
++   header = data.frame(fread(fnm, nrows=2, header=TRUE, strip.white=FALSE))
++   w_HLA = grep("^(HLA|DR)", names(header))
++   steps = unique(w_HLA[-1] - w_HLA[-length(w_HLA)])
++   step = if(length(steps)==1) steps else 6
++   HLAs = rep("", ncol(header))
++   for(w1 in w_HLA) HLAs[w1:(w1+step-1)] = paste0(names(header)[w1], "_")
++   gsub("-", "_", paste0(HLAs, header[1,]))
++ }
+> read_nm <- function(f) data.frame(fread(file.path(net_dir,f),
++                                         col.names=get_header(file.path(net_dir,f)), skip=2))
+> 
+> # ---- long format: one row per (ID, Pos, Peptide, HLA, rank) ----
+> to_long <- function(nm, rank_suffix){
++   rk = grep(rank_suffix, names(nm), value=TRUE)
++   m = melt(as.data.table(nm), id.vars=c("ID","Pos","Peptide"), measure.vars=rk,
++            variable.name="HLA", value.name="rank")
++   m[, HLA := gsub(rank_suffix, "", HLA)]
++   m[, ID  := gsub("(_MT|_M|_WT|_W)$", "", ID)]
++   m
++ }
+> 
+> # ---- mutation x HLA count matrix (full grid, zeros included) ----
+> build_matrix <- function(nm_mut, nm_ref, rank_suffix, cut){
++   mt = to_long(nm_mut, rank_suffix); setnames(mt, c("Peptide","rank"), c("pep_mt","rank_mt"))
++   rf = to_long(nm_ref, rank_suffix); setnames(rf, c("Peptide","rank"), c("pep_wt","rank_wt"))
++   d  = merge(mt, rf, by=c("ID","Pos","HLA"))
++   d[, present := (pep_mt != pep_wt) & (rank_mt < cut) & (rank_mt < rank_wt)]
++   long = d[present==TRUE, .(n_pep = .N), by=.(ID, HLA)]
++   all_ids = sort(unique(d$ID)); all_hla = sort(unique(d$HLA))
++   m = matrix(0L, length(all_ids), length(all_hla), dimnames=list(all_ids, all_hla))
++   if(nrow(long)>0) m[cbind(match(long$ID,all_ids), match(long$HLA,all_hla))] = long$n_pep
++   m
++ }
+> 
+> summarise_mat <- function(m){
++   per_mut = data.table(mutation=rownames(m), n_HLA=rowSums(m>0), n_peptides=rowSums(m))
++   per_hla = data.table(HLA=colnames(m),     n_mut=colSums(m>0), n_peptides=colSums(m))
++   list(per_mut=per_mut[order(-n_HLA)], per_hla=per_hla[order(-n_mut)])
++ }
+> 
+> hla_gene <- function(h){
++   fifelse(grepl("^HLA\\.A", h), "HLA-A",
++   fifelse(grepl("^HLA\\.B", h), "HLA-B",
++   fifelse(grepl("^HLA\\.C", h), "HLA-C",
++   fifelse(grepl("^DRB", h),     "HLA-DR",
++   fifelse(grepl("DQ", h),       "HLA-DQ",
++   fifelse(grepl("DP", h),       "HLA-DP", "other"))))))
++ }
+> clean_hla <- function(h) gsub("\\.", ":", gsub("^HLA\\.", "", h))   # HLA.A02.01 -> A02:01
+> 
+> # ---- heatmap (mutation x HLA), hierarchically ordered ----
+> draw_heatmap <- function(m, title, file, hgt){
++   ro = if(nrow(m)>2) rownames(m)[hclust(dist(m))$order]    else rownames(m)
++   co = if(ncol(m)>2) colnames(m)[hclust(dist(t(m)))$order] else colnames(m)
++   d = melt(as.data.table(m, keep.rownames="mutation"), id.vars="mutation",
++            variable.name="HLA", value.name="n")
++   d[, HLA_lab := clean_hla(as.character(HLA))]
++   lab_levels = clean_hla(co)
++   d[, mutation := factor(mutation, levels=ro)]
++   d[, HLA_lab  := factor(HLA_lab, levels=lab_levels)]
++   p = ggplot(d, aes(HLA_lab, mutation, fill=n)) +
++     geom_tile(color="grey92", linewidth=0.2) +
++     scale_fill_gradient(low="#f7fbff", high="#08306b", name="# neo-\npeptides") +
++     theme_minimal(base_size=9) +
++     theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=7),
++           axis.text.y=element_text(size=5.5), panel.grid=element_blank()) +
++     labs(title=title, x="HLA allele", y="somatic mutation")
++   ggsave(file, p, width=7, height=hgt, limitsize=FALSE)
++ }
+> 
+> # ---- bar plot: # mutations presented per HLA (all alleles), labeled ----
+> gene_cols = c("HLA-A"="#66C2A5","HLA-B"="#FC8D62","HLA-C"="#8DA0CB",
++               "HLA-DR"="#E78AC3","HLA-DQ"="#A6D854","HLA-DP"="#FFD92F")
+> make_bar <- function(per_hla){
++   d = per_hla[order(-n_mut)]
++   d[, gene := hla_gene(HLA)]
++   d[, lab := clean_hla(HLA)]
++   d[, lab := factor(lab, levels=lab[order(n_mut)])]
++   ggplot(d, aes(lab, n_mut, fill=gene)) +
++     geom_col() + coord_flip() +
++     geom_text(aes(label=n_mut), hjust=-0.25, size=2.4) +
++     scale_fill_manual(values=gene_cols, name="gene") +
++     expand_limits(y=max(d$n_mut)*1.12) +
++     theme_classic(base_size=10) +
++     labs(x="HLA allele", y="# somatic mutations presented")
++ }
+> 
+> # ===================== HLA-I =====================
+> nm_mut_I = merge(read_nm("NetMHCpan_4.1b_mut_HLA_A_B.xls"), read_nm("NetMHCpan_4.1b_mut_HLA_C.xls"),
++                  by=c("Pos","Peptide","ID"))
+> nm_ref_I = merge(read_nm("NetMHCpan_4.1b_ref_HLA_A_B.xls"), read_nm("NetMHCpan_4.1b_ref_HLA_C.xls"),
++                  by=c("Pos","Peptide","ID"))
+> mI = build_matrix(nm_mut_I, nm_ref_I, "_EL_Rank$", CUT)
+> sI = summarise_mat(mI)
+> 
+> # ===================== HLA-II =====================
+> read_ii <- function(tag){
++   rm2=c("Ave","NB","Target")
++   a=read_nm(sprintf("NetMHCIIpan_4.3i_%s_DR.xls",tag))[, ]; q=read_nm(sprintf("NetMHCIIpan_4.3i_%s_DQ.xls",tag))
++   p=read_nm(sprintf("NetMHCIIpan_4.3i_%s_DP.xls",tag))
++   a=a[,-which(names(a)%in%rm2)]; q=q[,-which(names(q)%in%rm2)]; p=p[,-which(names(p)%in%rm2)]
++   m=merge(a,q,by=c("Pos","Peptide","ID")); merge(m,p,by=c("Pos","Peptide","ID"))
++ }
+> mII = build_matrix(read_ii("mut"), read_ii("ref"), "_Rank$", CUT)
+> sII = summarise_mat(mII)
+> 
+> # ---- write matrices + summaries ----
+> fwrite(as.data.table(mI,  keep.rownames="mutation"), file.path(out_dir,"step8c_mut_by_HLA_I_matrix.tsv"),  sep="\t")
+> fwrite(as.data.table(mII, keep.rownames="mutation"), file.path(out_dir,"step8c_mut_by_HLA_II_matrix.tsv"), sep="\t")
+> fwrite(sI$per_mut,  file.path(out_dir,"step8c_HLA_I_per_mutation.tsv"),  sep="\t")
+> fwrite(sI$per_hla,  file.path(out_dir,"step8c_HLA_I_per_HLA.tsv"),       sep="\t")
+> fwrite(sII$per_mut, file.path(out_dir,"step8c_HLA_II_per_mutation.tsv"), sep="\t")
+> fwrite(sII$per_hla, file.path(out_dir,"step8c_HLA_II_per_HLA.tsv"),      sep="\t")
+> 
+> # ---- figures ----
+> setwd(out_dir)
+> draw_heatmap(mI,  sprintf("HLA-I neo-peptide presentation (EL %%rank < %g & MT < WT)", CUT),
++              "step8c_heatmap_HLA_I.pdf",  hgt=9)
+> draw_heatmap(mII, sprintf("HLA-II neo-peptide presentation (EL %%rank < %g & MT < WT)", CUT),
++              "step8c_heatmap_HLA_II.pdf", hgt=9)
+> bI = make_bar(sI$per_hla); bII = make_bar(sII$per_hla)
+> ggsave("step8c_barplot_mut_per_HLA_I.pdf",  bI,  width=4.8, height=5)
+> ggsave("step8c_barplot_mut_per_HLA_II.pdf", bII, width=4.8, height=5)
+> ggsave("step8c_barplot_mut_per_HLA.pdf",
++        (bI + ggtitle("HLA-I")) + (bII + ggtitle("HLA-II")) + plot_layout(guides="collect"),
++        width=8.5, height=5)
+> 
+> cat(sprintf("HLA-I : %d mutations x %d alleles; %d mutations with >=1 HLA; density %.1f%%\n",
++             nrow(mI), ncol(mI), sum(rowSums(mI>0)>0), 100*mean(mI>0)))
+HLA-I : 47 mutations x 23 alleles; 38 mutations with >=1 HLA; density 21.6%
+> cat(sprintf("HLA-II: %d mutations x %d alleles; %d mutations with >=1 HLA; density %.1f%%\n",
++             nrow(mII), ncol(mII), sum(rowSums(mII>0)>0), 100*mean(mII>0)))
+HLA-II: 46 mutations x 22 alleles; 18 mutations with >=1 HLA; density 4.5%
+> cat("wrote matrices, summaries, heatmaps, bar plots to step8b_NetMHCpan/\n")
+wrote matrices, summaries, heatmaps, bar plots to step8b_NetMHCpan/
+> 
+> proc.time()
+   user  system elapsed 
+  0.849   0.063   0.946 
